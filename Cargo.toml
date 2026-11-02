@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/klav-core",
+    "crates/klav-io",
 ]
 
 [workspace.package]
