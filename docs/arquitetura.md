@@ -237,3 +237,5 @@ Regras:
 - **Tempo:** fixo por `Score` (`tempo_bpm`) no MVP. Mudanças de andamento ficam para depois — a struct
   já isola isso num único campo, então a evolução não quebra o modelo.
 - **Formato nativo `.klav`:** JSON via `serde`. Legível, versionável no git; otimização binária depois.
+- **Backend de render:** **SVG** no MVP. `klav-layout` gera geometria **agnóstica** (posições em staff-spaces + glifos SMuFL), então o backend é trocável — na Fase 3 (partituras grandes/Continuous View) pode-se adicionar um backend Canvas/WebGL sem mexer no motor de layout. SVG dá nitidez/impressão (Page View), hit-testing nativo (edição) e estilo por nota (Visual Diff da Fase 4) com menos esforço.
+- **Fonte musical:** **Bravura** (SMuFL, Steinberg, licença SIL OFL — livre e redistribuível). O `klav-layout` fica agnóstico à fonte.
