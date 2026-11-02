@@ -15,7 +15,7 @@
 //! O relógio assíncrono e o canal de posição para a UI (ver `docs/arquitetura.md` §4)
 //! ficam numa camada posterior, específica de plataforma.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use klav_core::{Fraction, Score};
 
@@ -144,6 +144,42 @@ pub fn render_events(score: &Score) -> Vec<MidiEvent> {
             .then(a.message.tie_break().cmp(&b.message.tie_break()))
     });
     events
+}
+
+/// Um intervalo soante de uma tecla: `[start, end)` em frações de semibreve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyInterval {
+    pub key: u8,
+    pub start: Fraction,
+    pub end: Fraction,
+}
+
+/// Pareia os `NoteOn`/`NoteOff` de [`render_events`] em intervalos por tecla.
+///
+/// Como as mensagens MIDI carregam só o número da tecla (sem identidade de nota), o
+/// pareamento é **FIFO por tecla**: cada `NoteOff` fecha o `NoteOn` em aberto mais antigo
+/// daquela tecla. Isso preserva **múltiplas instâncias simultâneas da mesma tecla** (duas
+/// vozes tocando a mesma altura em intervalos sobrepostos geram dois intervalos, não um).
+///
+/// Os eventos devem vir ordenados por tempo (como [`render_events`] os entrega), com
+/// `NoteOff` antes de `NoteOn` no mesmo instante — assim uma rearticulação contígua
+/// (nota termina e outra começa no mesmo tick) fecha a primeira antes de abrir a segunda.
+pub fn key_intervals(events: &[MidiEvent]) -> Vec<KeyInterval> {
+    let mut open: HashMap<u8, VecDeque<Fraction>> = HashMap::new();
+    let mut out = Vec::new();
+    for e in events {
+        match e.message {
+            MidiMessage::NoteOn { key, .. } => {
+                open.entry(key).or_default().push_back(e.time);
+            }
+            MidiMessage::NoteOff { key } => {
+                if let Some(start) = open.get_mut(&key).and_then(VecDeque::pop_front) {
+                    out.push(KeyInterval { key, start, end: e.time });
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Percorre a partitura e coleta cada nota (por id) com tempo absoluto e duração soante.
@@ -349,6 +385,52 @@ mod tests {
         // 2ª nota (compasso 2) começa em 1 semibreve (fim do compasso 4/4).
         let on_d = ev.iter().find(|e| e.message == MidiMessage::NoteOn { key: 62, velocity: 80 }).unwrap();
         assert_eq!(on_d.time, Fraction::ONE);
+    }
+
+    #[test]
+    fn key_intervals_pareia_nota_simples() {
+        let v = Voice {
+            voice_id: 0,
+            elements: vec![elem(1, Fraction::ZERO, DurationBase::Quarter, vec![note(10, 'C', 4, None)])],
+        };
+        let iv = key_intervals(&render_events(&one_measure(vec![v], vec![])));
+        assert_eq!(iv, vec![KeyInterval { key: 60, start: Fraction::ZERO, end: Fraction::new(1, 4) }]);
+    }
+
+    #[test]
+    fn teclas_simultaneas_na_mesma_altura_mantem_dois_intervalos() {
+        // Voz 0: C4 (mínima) de 0 a 1/2.  Voz 1: C4 (mínima) de 1/4 a 3/4. Sobrepostos.
+        let q = Fraction::new(1, 4);
+        let v0 = Voice {
+            voice_id: 0,
+            elements: vec![elem(1, Fraction::ZERO, DurationBase::Half, vec![note(10, 'C', 4, None)])],
+        };
+        let v1 = Voice {
+            voice_id: 1,
+            elements: vec![elem(2, q, DurationBase::Half, vec![note(20, 'C', 4, None)])],
+        };
+        let iv = key_intervals(&render_events(&one_measure(vec![v0, v1], vec![])));
+        // Dois intervalos distintos para a tecla 60, não um só.
+        assert_eq!(iv.len(), 2, "esperava 2 intervalos, veio {iv:?}");
+        assert!(iv.contains(&KeyInterval { key: 60, start: Fraction::ZERO, end: Fraction::new(1, 2) }));
+        assert!(iv.contains(&KeyInterval { key: 60, start: q, end: Fraction::new(3, 4) }));
+    }
+
+    #[test]
+    fn rearticulacao_contigua_vira_dois_intervalos() {
+        // Mesma tecla, duas semínimas em sequência: 0..1/4 e 1/4..1/2.
+        let q = Fraction::new(1, 4);
+        let v = Voice {
+            voice_id: 0,
+            elements: vec![
+                elem(1, Fraction::ZERO, DurationBase::Quarter, vec![note(10, 'C', 4, None)]),
+                elem(2, q, DurationBase::Quarter, vec![note(11, 'C', 4, None)]),
+            ],
+        };
+        let iv = key_intervals(&render_events(&one_measure(vec![v], vec![])));
+        assert_eq!(iv.len(), 2);
+        assert_eq!(iv[0], KeyInterval { key: 60, start: Fraction::ZERO, end: q });
+        assert_eq!(iv[1], KeyInterval { key: 60, start: q, end: Fraction::new(1, 2) });
     }
 
     #[test]

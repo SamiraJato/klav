@@ -6,7 +6,7 @@
 mod synth;
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -20,7 +20,7 @@ use klav_core::{
     ChordOrRest, Clef, Duration as NoteDuration, DurationBase, ElementId, Fraction, Measure, Note,
     NoteId, Pitch, Score, StaffType, TimeSignature, Voice,
 };
-use klav_engine::{render_events, total_duration_whole, whole_to_seconds, MidiEvent, MidiMessage};
+use klav_engine::{key_intervals, render_events, total_duration_whole, whole_to_seconds};
 use klav_layout::{layout_single_staff, StaffLayout, CLEF_WIDTH, MARGIN, SPACE_PER_WHOLE};
 
 /// Fonte Bravura (SMuFL, SIL OFL) embarcada no binário.
@@ -100,11 +100,18 @@ fn App() -> Element {
     let active_score = use_memo(move || tabs.read().get(active()).map(|t| t.score.clone()));
     let tempo = use_memo(move || active_score.read().as_ref().map(|s| s.tempo_bpm).unwrap_or(120));
     let layout = use_memo(move || active_score.read().as_ref().map(layout_single_staff));
+    // Intervalos (tecla, início, fim) em semibreves — pareados no engine, preservando
+    // instâncias simultâneas da mesma tecla.
     let intervals = use_memo(move || {
         active_score
             .read()
             .as_ref()
-            .map(|s| build_intervals(&render_events(s)))
+            .map(|s| {
+                key_intervals(&render_events(s))
+                    .into_iter()
+                    .map(|iv| (iv.key, iv.start.to_f64(), iv.end.to_f64()))
+                    .collect::<Vec<(u8, f64, f64)>>()
+            })
             .unwrap_or_default()
     });
     let total_secs = use_memo(move || {
@@ -603,25 +610,6 @@ fn sample_score() -> Score {
         staff_type: StaffType::Single(Clef::Treble),
         measures,
     }
-}
-
-/// Pareia NoteOn/NoteOff em intervalos (tecla, início, fim) em semibreves.
-fn build_intervals(events: &[MidiEvent]) -> Vec<(u8, f64, f64)> {
-    let mut open: HashMap<u8, f64> = HashMap::new();
-    let mut out = Vec::new();
-    for e in events {
-        match e.message {
-            MidiMessage::NoteOn { key, .. } => {
-                open.insert(key, e.time.to_f64());
-            }
-            MidiMessage::NoteOff { key } => {
-                if let Some(start) = open.remove(&key) {
-                    out.push((key, start, e.time.to_f64()));
-                }
-            }
-        }
-    }
-    out
 }
 
 /// Geometria das 88 teclas (A0=21 .. C8=108): (brancas, pretas, largura total).
