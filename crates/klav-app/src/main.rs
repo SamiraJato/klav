@@ -76,7 +76,13 @@ fn App() -> Element {
 
     // Derivados da aba ativa (None se não houver aba).
     let active_score = use_memo(move || tabs.read().get(active()).map(|t| t.score.clone()));
-    let tempo = use_memo(move || active_score.read().as_ref().map(|s| s.tempo_bpm).unwrap_or(120));
+    let tempo = use_memo(move || {
+        active_score
+            .read()
+            .as_ref()
+            .map(|s| s.tempo_bpm)
+            .unwrap_or(120)
+    });
     let layout = use_memo(move || active_score.read().as_ref().map(layout_single_staff));
     // Intervalos (tecla, início, fim) em semibreves — pareados no engine, preservando
     // instâncias simultâneas da mesma tecla.
@@ -155,10 +161,18 @@ fn App() -> Element {
     let open_folder = move |_| {
         let w = w_folder.clone();
         spawn(async move {
-            if let Some(dir) = rfd::AsyncFileDialog::new().set_parent(&w.window).pick_folder().await {
+            if let Some(dir) = rfd::AsyncFileDialog::new()
+                .set_parent(&w.window)
+                .pick_folder()
+                .await
+            {
                 let path = dir.path().to_path_buf();
                 let files = scan_klav(&path);
-                status.set(format!("{} arquivo(s) .klav em {}", files.len(), path.display()));
+                status.set(format!(
+                    "{} arquivo(s) .klav em {}",
+                    files.len(),
+                    path.display()
+                ));
                 project_dir.set(Some(path));
                 project_files.set(files);
             }
@@ -231,7 +245,11 @@ fn App() -> Element {
     // --- Dados para render ---
     let lay_opt: Option<StaffLayout> = layout.read().clone();
     let sel = tabs.read().get(active()).and_then(|t| t.selected);
-    let title = tabs.read().get(active()).map(|t| t.title()).unwrap_or_else(|| "—".into());
+    let title = tabs
+        .read()
+        .get(active())
+        .map(|t| t.title())
+        .unwrap_or_else(|| "—".into());
     let bpm = tempo();
     let glyph_count = lay_opt.as_ref().map(|l| l.glyphs.len()).unwrap_or(0);
 

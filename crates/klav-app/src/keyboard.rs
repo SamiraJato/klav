@@ -7,10 +7,13 @@ pub const WHITE_W: f64 = 15.0;
 /// Largura de uma tecla preta.
 pub const BLACK_W: f64 = 9.0;
 
+/// Fila de teclas: cada item é `(nota_midi, x)`.
+pub type KeyRow = Vec<(u8, f64)>;
+
 /// Posições das 88 teclas: (brancas, pretas, largura total).
 ///
-/// Cada item é `(nota_midi, x)`. As pretas ficam centradas na junção entre brancas.
-pub fn keyboard_geometry() -> (Vec<(u8, f64)>, Vec<(u8, f64)>, f64) {
+/// As pretas ficam centradas na junção entre brancas.
+pub fn keyboard_geometry() -> (KeyRow, KeyRow, f64) {
     let mut whites = Vec::new();
     let mut blacks = Vec::new();
     let mut wx = 0.0;

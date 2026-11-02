@@ -174,7 +174,11 @@ pub fn key_intervals(events: &[MidiEvent]) -> Vec<KeyInterval> {
             }
             MidiMessage::NoteOff { key } => {
                 if let Some(start) = open.get_mut(&key).and_then(VecDeque::pop_front) {
-                    out.push(KeyInterval { key, start, end: e.time });
+                    out.push(KeyInterval {
+                        key,
+                        start,
+                        end: e.time,
+                    });
                 }
             }
         }
@@ -284,7 +288,10 @@ mod tests {
             staff_type: StaffType::Single(Clef::Treble),
             measures: vec![Measure {
                 index: 0,
-                time_signature: Some(TimeSignature { numerator: 4, denominator: 4 }),
+                time_signature: Some(TimeSignature {
+                    numerator: 4,
+                    denominator: 4,
+                }),
                 key_signature: Some(0),
                 chord_symbols: vec![],
                 voices,
@@ -297,12 +304,32 @@ mod tests {
     fn nota_simples_gera_on_e_off() {
         let v = Voice {
             voice_id: 0,
-            elements: vec![elem(1, Fraction::ZERO, DurationBase::Quarter, vec![note(10, 'C', 4, None)])],
+            elements: vec![elem(
+                1,
+                Fraction::ZERO,
+                DurationBase::Quarter,
+                vec![note(10, 'C', 4, None)],
+            )],
         };
         let ev = render_events(&one_measure(vec![v], vec![]));
         assert_eq!(ev.len(), 2);
-        assert_eq!(ev[0], MidiEvent { time: Fraction::ZERO, message: MidiMessage::NoteOn { key: 60, velocity: 80 } });
-        assert_eq!(ev[1], MidiEvent { time: Fraction::new(1, 4), message: MidiMessage::NoteOff { key: 60 } });
+        assert_eq!(
+            ev[0],
+            MidiEvent {
+                time: Fraction::ZERO,
+                message: MidiMessage::NoteOn {
+                    key: 60,
+                    velocity: 80
+                }
+            }
+        );
+        assert_eq!(
+            ev[1],
+            MidiEvent {
+                time: Fraction::new(1, 4),
+                message: MidiMessage::NoteOff { key: 60 }
+            }
+        );
     }
 
     #[test]
@@ -321,13 +348,24 @@ mod tests {
         let v = Voice {
             voice_id: 0,
             elements: vec![
-                elem(1, Fraction::ZERO, DurationBase::Quarter, vec![note(10, 'C', 4, Some(11))]),
+                elem(
+                    1,
+                    Fraction::ZERO,
+                    DurationBase::Quarter,
+                    vec![note(10, 'C', 4, Some(11))],
+                ),
                 elem(2, q, DurationBase::Quarter, vec![note(11, 'C', 4, None)]),
             ],
         };
         let ev = render_events(&one_measure(vec![v], vec![]));
         assert_eq!(ev.len(), 2);
-        assert_eq!(ev[0].message, MidiMessage::NoteOn { key: 60, velocity: 80 });
+        assert_eq!(
+            ev[0].message,
+            MidiMessage::NoteOn {
+                key: 60,
+                velocity: 80
+            }
+        );
         assert_eq!(ev[0].time, Fraction::ZERO);
         assert_eq!(ev[1].message, MidiMessage::NoteOff { key: 60 });
         assert_eq!(ev[1].time, Fraction::new(1, 2));
@@ -341,21 +379,36 @@ mod tests {
                 1,
                 Fraction::ZERO,
                 DurationBase::Half,
-                vec![note(10, 'C', 4, None), note(11, 'E', 4, None), note(12, 'G', 4, None)],
+                vec![
+                    note(10, 'C', 4, None),
+                    note(11, 'E', 4, None),
+                    note(12, 'G', 4, None),
+                ],
             )],
         };
         let ev = render_events(&one_measure(vec![v], vec![]));
         assert_eq!(ev.len(), 6); // 3 on + 3 off
-        let ons = ev.iter().filter(|e| matches!(e.message, MidiMessage::NoteOn { .. })).count();
+        let ons = ev
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .count();
         assert_eq!(ons, 3);
     }
 
     #[test]
     fn tuplet_escala_duracao() {
         // Tercina de colcheias: cada colcheia (1/8) * (2/3) = 1/12.
-        let mut e = elem(1, Fraction::ZERO, DurationBase::Eighth, vec![note(10, 'C', 4, None)]);
+        let mut e = elem(
+            1,
+            Fraction::ZERO,
+            DurationBase::Eighth,
+            vec![note(10, 'C', 4, None)],
+        );
         e.tuplet = Some(TupletId(100));
-        let v = Voice { voice_id: 0, elements: vec![e] };
+        let v = Voice {
+            voice_id: 0,
+            elements: vec![e],
+        };
         let tuplet = Tuplet {
             id: TupletId(100),
             actual: 3,
@@ -370,20 +423,62 @@ mod tests {
 
     #[test]
     fn notas_em_compassos_diferentes_tem_tempo_absoluto() {
-        let v0 = Voice { voice_id: 0, elements: vec![elem(1, Fraction::ZERO, DurationBase::Whole, vec![note(10, 'C', 4, None)])] };
-        let v1 = Voice { voice_id: 0, elements: vec![elem(2, Fraction::ZERO, DurationBase::Whole, vec![note(20, 'D', 4, None)])] };
+        let v0 = Voice {
+            voice_id: 0,
+            elements: vec![elem(
+                1,
+                Fraction::ZERO,
+                DurationBase::Whole,
+                vec![note(10, 'C', 4, None)],
+            )],
+        };
+        let v1 = Voice {
+            voice_id: 0,
+            elements: vec![elem(
+                2,
+                Fraction::ZERO,
+                DurationBase::Whole,
+                vec![note(20, 'D', 4, None)],
+            )],
+        };
         let score = Score {
             title: "t".into(),
             tempo_bpm: 120,
             staff_type: StaffType::Single(Clef::Treble),
             measures: vec![
-                Measure { index: 0, time_signature: Some(TimeSignature { numerator: 4, denominator: 4 }), key_signature: Some(0), chord_symbols: vec![], voices: vec![v0], tuplets: vec![] },
-                Measure { index: 1, time_signature: None, key_signature: None, chord_symbols: vec![], voices: vec![v1], tuplets: vec![] },
+                Measure {
+                    index: 0,
+                    time_signature: Some(TimeSignature {
+                        numerator: 4,
+                        denominator: 4,
+                    }),
+                    key_signature: Some(0),
+                    chord_symbols: vec![],
+                    voices: vec![v0],
+                    tuplets: vec![],
+                },
+                Measure {
+                    index: 1,
+                    time_signature: None,
+                    key_signature: None,
+                    chord_symbols: vec![],
+                    voices: vec![v1],
+                    tuplets: vec![],
+                },
             ],
         };
         let ev = render_events(&score);
         // 2ª nota (compasso 2) começa em 1 semibreve (fim do compasso 4/4).
-        let on_d = ev.iter().find(|e| e.message == MidiMessage::NoteOn { key: 62, velocity: 80 }).unwrap();
+        let on_d = ev
+            .iter()
+            .find(|e| {
+                e.message
+                    == MidiMessage::NoteOn {
+                        key: 62,
+                        velocity: 80,
+                    }
+            })
+            .unwrap();
         assert_eq!(on_d.time, Fraction::ONE);
     }
 
@@ -391,10 +486,22 @@ mod tests {
     fn key_intervals_pareia_nota_simples() {
         let v = Voice {
             voice_id: 0,
-            elements: vec![elem(1, Fraction::ZERO, DurationBase::Quarter, vec![note(10, 'C', 4, None)])],
+            elements: vec![elem(
+                1,
+                Fraction::ZERO,
+                DurationBase::Quarter,
+                vec![note(10, 'C', 4, None)],
+            )],
         };
         let iv = key_intervals(&render_events(&one_measure(vec![v], vec![])));
-        assert_eq!(iv, vec![KeyInterval { key: 60, start: Fraction::ZERO, end: Fraction::new(1, 4) }]);
+        assert_eq!(
+            iv,
+            vec![KeyInterval {
+                key: 60,
+                start: Fraction::ZERO,
+                end: Fraction::new(1, 4)
+            }]
+        );
     }
 
     #[test]
@@ -403,7 +510,12 @@ mod tests {
         let q = Fraction::new(1, 4);
         let v0 = Voice {
             voice_id: 0,
-            elements: vec![elem(1, Fraction::ZERO, DurationBase::Half, vec![note(10, 'C', 4, None)])],
+            elements: vec![elem(
+                1,
+                Fraction::ZERO,
+                DurationBase::Half,
+                vec![note(10, 'C', 4, None)],
+            )],
         };
         let v1 = Voice {
             voice_id: 1,
@@ -412,8 +524,16 @@ mod tests {
         let iv = key_intervals(&render_events(&one_measure(vec![v0, v1], vec![])));
         // Dois intervalos distintos para a tecla 60, não um só.
         assert_eq!(iv.len(), 2, "esperava 2 intervalos, veio {iv:?}");
-        assert!(iv.contains(&KeyInterval { key: 60, start: Fraction::ZERO, end: Fraction::new(1, 2) }));
-        assert!(iv.contains(&KeyInterval { key: 60, start: q, end: Fraction::new(3, 4) }));
+        assert!(iv.contains(&KeyInterval {
+            key: 60,
+            start: Fraction::ZERO,
+            end: Fraction::new(1, 2)
+        }));
+        assert!(iv.contains(&KeyInterval {
+            key: 60,
+            start: q,
+            end: Fraction::new(3, 4)
+        }));
     }
 
     #[test]
@@ -423,14 +543,33 @@ mod tests {
         let v = Voice {
             voice_id: 0,
             elements: vec![
-                elem(1, Fraction::ZERO, DurationBase::Quarter, vec![note(10, 'C', 4, None)]),
+                elem(
+                    1,
+                    Fraction::ZERO,
+                    DurationBase::Quarter,
+                    vec![note(10, 'C', 4, None)],
+                ),
                 elem(2, q, DurationBase::Quarter, vec![note(11, 'C', 4, None)]),
             ],
         };
         let iv = key_intervals(&render_events(&one_measure(vec![v], vec![])));
         assert_eq!(iv.len(), 2);
-        assert_eq!(iv[0], KeyInterval { key: 60, start: Fraction::ZERO, end: q });
-        assert_eq!(iv[1], KeyInterval { key: 60, start: q, end: Fraction::new(1, 2) });
+        assert_eq!(
+            iv[0],
+            KeyInterval {
+                key: 60,
+                start: Fraction::ZERO,
+                end: q
+            }
+        );
+        assert_eq!(
+            iv[1],
+            KeyInterval {
+                key: 60,
+                start: q,
+                end: Fraction::new(1, 2)
+            }
+        );
     }
 
     #[test]
@@ -442,14 +581,37 @@ mod tests {
 
     #[test]
     fn duracao_total_soma_compassos() {
-        let v = Voice { voice_id: 0, elements: vec![] };
+        let v = Voice {
+            voice_id: 0,
+            elements: vec![],
+        };
         let score = Score {
             title: "t".into(),
             tempo_bpm: 120,
             staff_type: StaffType::Single(Clef::Treble),
             measures: vec![
-                Measure { index: 0, time_signature: Some(TimeSignature { numerator: 4, denominator: 4 }), key_signature: Some(0), chord_symbols: vec![], voices: vec![v.clone()], tuplets: vec![] },
-                Measure { index: 1, time_signature: Some(TimeSignature { numerator: 3, denominator: 4 }), key_signature: None, chord_symbols: vec![], voices: vec![v], tuplets: vec![] },
+                Measure {
+                    index: 0,
+                    time_signature: Some(TimeSignature {
+                        numerator: 4,
+                        denominator: 4,
+                    }),
+                    key_signature: Some(0),
+                    chord_symbols: vec![],
+                    voices: vec![v.clone()],
+                    tuplets: vec![],
+                },
+                Measure {
+                    index: 1,
+                    time_signature: Some(TimeSignature {
+                        numerator: 3,
+                        denominator: 4,
+                    }),
+                    key_signature: None,
+                    chord_symbols: vec![],
+                    voices: vec![v],
+                    tuplets: vec![],
+                },
             ],
         };
         // 4/4 + 3/4 = 1 + 3/4 = 7/4

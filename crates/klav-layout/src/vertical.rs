@@ -50,7 +50,9 @@ pub fn note_y(pitch: &Pitch, clef: Clef) -> Option<f64> {
 
 /// `true` se a nota cai dentro das 5 linhas da pauta (`0.0..=4.0`).
 pub fn within_staff(pitch: &Pitch, clef: Clef) -> bool {
-    note_y(pitch, clef).map(|y| (0.0..=4.0).contains(&y)).unwrap_or(false)
+    note_y(pitch, clef)
+        .map(|y| (0.0..=4.0).contains(&y))
+        .unwrap_or(false)
 }
 
 /// Quantidade de linhas suplementares necessárias (0 se estiver dentro da pauta).

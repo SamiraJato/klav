@@ -26,7 +26,10 @@ pub struct SynthRuntime {
 impl SynthRuntime {
     /// Runtime silencioso (sem áudio) — usado em falhas.
     pub fn silent() -> Self {
-        SynthRuntime { _stream: None, tx: None }
+        SynthRuntime {
+            _stream: None,
+            tx: None,
+        }
     }
 
     /// Inicia o áudio no dispositivo de saída padrão.
@@ -63,7 +66,10 @@ impl SynthRuntime {
         if stream.play().is_err() {
             return Self::silent();
         }
-        SynthRuntime { _stream: Some(stream), tx: Some(tx) }
+        SynthRuntime {
+            _stream: Some(stream),
+            tx: Some(tx),
+        }
     }
 }
 
@@ -77,7 +83,9 @@ pub fn list_output_devices() -> Vec<String> {
 
 /// Nome do dispositivo de saída padrão.
 pub fn default_output_name() -> Option<String> {
-    cpal::default_host().default_output_device().and_then(|d| d.name().ok())
+    cpal::default_host()
+        .default_output_device()
+        .and_then(|d| d.name().ok())
 }
 
 /// Procura um dispositivo de saída pelo nome.
@@ -128,7 +136,12 @@ impl Synth {
             }
             SynthCmd::NoteOff(key) => {
                 // solta a voz mais recente ainda ativa daquela tecla
-                if let Some(v) = self.voices.iter_mut().rev().find(|v| v.key == key && !v.releasing) {
+                if let Some(v) = self
+                    .voices
+                    .iter_mut()
+                    .rev()
+                    .find(|v| v.key == key && !v.releasing)
+                {
                     v.releasing = true;
                 }
             }

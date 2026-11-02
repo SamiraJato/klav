@@ -130,20 +130,14 @@ impl Ord for Fraction {
 impl Add for Fraction {
     type Output = Fraction;
     fn add(self, rhs: Fraction) -> Fraction {
-        Fraction::new(
-            self.num * rhs.den + rhs.num * self.den,
-            self.den * rhs.den,
-        )
+        Fraction::new(self.num * rhs.den + rhs.num * self.den, self.den * rhs.den)
     }
 }
 
 impl Sub for Fraction {
     type Output = Fraction;
     fn sub(self, rhs: Fraction) -> Fraction {
-        Fraction::new(
-            self.num * rhs.den - rhs.num * self.den,
-            self.den * rhs.den,
-        )
+        Fraction::new(self.num * rhs.den - rhs.num * self.den, self.den * rhs.den)
     }
 }
 
@@ -186,8 +180,14 @@ mod tests {
 
     #[test]
     fn subtracao_e_multiplicacao() {
-        assert_eq!(Fraction::new(1, 2) - Fraction::new(1, 4), Fraction::new(1, 4));
-        assert_eq!(Fraction::new(1, 4) * Fraction::new(2, 1), Fraction::new(1, 2));
+        assert_eq!(
+            Fraction::new(1, 2) - Fraction::new(1, 4),
+            Fraction::new(1, 4)
+        );
+        assert_eq!(
+            Fraction::new(1, 4) * Fraction::new(2, 1),
+            Fraction::new(1, 2)
+        );
     }
 
     #[test]
@@ -212,7 +212,10 @@ mod tests {
     #[test]
     fn desserializar_denominador_zero_e_erro() {
         let err = serde_json::from_str::<Fraction>(r#"{"num":1,"den":0}"#);
-        assert!(err.is_err(), "den==0 deveria falhar na desserialização, veio {err:?}");
+        assert!(
+            err.is_err(),
+            "den==0 deveria falhar na desserialização, veio {err:?}"
+        );
     }
 
     #[test]

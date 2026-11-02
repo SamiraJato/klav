@@ -216,11 +216,19 @@ mod tests {
     #[test]
     fn duracao_compasso_por_formula() {
         assert_eq!(
-            TimeSignature { numerator: 4, denominator: 4 }.measure_duration(),
+            TimeSignature {
+                numerator: 4,
+                denominator: 4
+            }
+            .measure_duration(),
             Fraction::ONE
         );
         assert_eq!(
-            TimeSignature { numerator: 6, denominator: 8 }.measure_duration(),
+            TimeSignature {
+                numerator: 6,
+                denominator: 8
+            }
+            .measure_duration(),
             Fraction::new(3, 4)
         );
     }

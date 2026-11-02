@@ -24,13 +24,29 @@ pub enum ValidationError {
     /// Soma das durações de uma voz (com tuplets aplicados) excede a duração do compasso.
     VoiceExceedsMeasure { measure: u32, voice_id: u8 },
     /// `tie_to` aponta para uma nota inexistente no Score.
-    DanglingTie { measure: u32, from: NoteId, to: NoteId },
+    DanglingTie {
+        measure: u32,
+        from: NoteId,
+        to: NoteId,
+    },
     /// `tie_to` aponta para uma nota de altura diferente.
-    TiePitchMismatch { measure: u32, from: NoteId, to: NoteId },
+    TiePitchMismatch {
+        measure: u32,
+        from: NoteId,
+        to: NoteId,
+    },
     /// `tie_to` aponta para uma nota de outra voz.
-    TieVoiceMismatch { measure: u32, from: NoteId, to: NoteId },
+    TieVoiceMismatch {
+        measure: u32,
+        from: NoteId,
+        to: NoteId,
+    },
     /// `tie_to` não aponta para o elemento imediatamente seguinte da mesma voz.
-    TieNotImmediate { measure: u32, from: NoteId, to: NoteId },
+    TieNotImmediate {
+        measure: u32,
+        from: NoteId,
+        to: NoteId,
+    },
     /// Membro de tuplet referencia um `ElementId` inexistente no compasso.
     TupletMemberMissing { measure: u32, member: ElementId },
     /// Nenhum compasso tem fórmula de compasso e nenhuma foi herdada.
@@ -163,7 +179,10 @@ fn validate_measure(
             });
         }
         if tuplet_ratio
-            .insert(t.id.value(), Fraction::new(t.normal as i64, t.actual as i64))
+            .insert(
+                t.id.value(),
+                Fraction::new(t.normal as i64, t.actual as i64),
+            )
             .is_some()
         {
             return Err(ValidationError::DuplicateTupletId {
@@ -359,14 +378,21 @@ mod tests {
         score_44_full(voices, vec![], vec![])
     }
 
-    fn score_44_full(voices: Vec<Voice>, tuplets: Vec<Tuplet>, chord_symbols: Vec<ChordSymbol>) -> Score {
+    fn score_44_full(
+        voices: Vec<Voice>,
+        tuplets: Vec<Tuplet>,
+        chord_symbols: Vec<ChordSymbol>,
+    ) -> Score {
         Score {
             title: "t".into(),
             tempo_bpm: 120,
             staff_type: StaffType::GrandStaff,
             measures: vec![Measure {
                 index: 0,
-                time_signature: Some(TimeSignature { numerator: 4, denominator: 4 }),
+                time_signature: Some(TimeSignature {
+                    numerator: 4,
+                    denominator: 4,
+                }),
                 key_signature: Some(0),
                 chord_symbols,
                 voices,
@@ -405,7 +431,10 @@ mod tests {
         };
         assert_eq!(
             score_44(vec![v]).validate(),
-            Err(ValidationError::VoiceExceedsMeasure { measure: 0, voice_id: 0 })
+            Err(ValidationError::VoiceExceedsMeasure {
+                measure: 0,
+                voice_id: 0
+            })
         );
     }
 
@@ -419,7 +448,11 @@ mod tests {
         };
         assert_eq!(
             score_44(vec![v]).validate(),
-            Err(ValidationError::DanglingTie { measure: 0, from: NoteId(10), to: NoteId(999) })
+            Err(ValidationError::DanglingTie {
+                measure: 0,
+                from: NoteId(10),
+                to: NoteId(999)
+            })
         );
     }
 
@@ -452,7 +485,11 @@ mod tests {
         };
         assert_eq!(
             score_44(vec![v]).validate(),
-            Err(ValidationError::TiePitchMismatch { measure: 0, from: NoteId(10), to: NoteId(11) })
+            Err(ValidationError::TiePitchMismatch {
+                measure: 0,
+                from: NoteId(10),
+                to: NoteId(11)
+            })
         );
     }
 
@@ -460,11 +497,21 @@ mod tests {
     fn detecta_tie_entre_vozes() {
         let mut n0 = note(10, 'C', 4);
         n0.tie_to = Some(NoteId(20));
-        let v0 = Voice { voice_id: 0, elements: vec![quarter(1, Fraction::ZERO, vec![n0])] };
-        let v1 = Voice { voice_id: 1, elements: vec![quarter(2, Fraction::ZERO, vec![note(20, 'C', 4)])] };
+        let v0 = Voice {
+            voice_id: 0,
+            elements: vec![quarter(1, Fraction::ZERO, vec![n0])],
+        };
+        let v1 = Voice {
+            voice_id: 1,
+            elements: vec![quarter(2, Fraction::ZERO, vec![note(20, 'C', 4)])],
+        };
         assert_eq!(
             score_44(vec![v0, v1]).validate(),
-            Err(ValidationError::TieVoiceMismatch { measure: 0, from: NoteId(10), to: NoteId(20) })
+            Err(ValidationError::TieVoiceMismatch {
+                measure: 0,
+                from: NoteId(10),
+                to: NoteId(20)
+            })
         );
     }
 
@@ -483,7 +530,11 @@ mod tests {
         };
         assert_eq!(
             score_44(vec![v]).validate(),
-            Err(ValidationError::TieNotImmediate { measure: 0, from: NoteId(10), to: NoteId(12) })
+            Err(ValidationError::TieNotImmediate {
+                measure: 0,
+                from: NoteId(10),
+                to: NoteId(12)
+            })
         );
     }
 
@@ -511,8 +562,25 @@ mod tests {
             tempo_bpm: 120,
             staff_type: StaffType::GrandStaff,
             measures: vec![
-                Measure { index: 0, time_signature: Some(TimeSignature { numerator: 4, denominator: 4 }), key_signature: Some(0), chord_symbols: vec![], voices: vec![v0], tuplets: vec![] },
-                Measure { index: 1, time_signature: None, key_signature: None, chord_symbols: vec![], voices: vec![v1], tuplets: vec![] },
+                Measure {
+                    index: 0,
+                    time_signature: Some(TimeSignature {
+                        numerator: 4,
+                        denominator: 4,
+                    }),
+                    key_signature: Some(0),
+                    chord_symbols: vec![],
+                    voices: vec![v0],
+                    tuplets: vec![],
+                },
+                Measure {
+                    index: 1,
+                    time_signature: None,
+                    key_signature: None,
+                    chord_symbols: vec![],
+                    voices: vec![v1],
+                    tuplets: vec![],
+                },
             ],
         };
         assert_eq!(score.validate(), Ok(()));
@@ -520,11 +588,20 @@ mod tests {
 
     #[test]
     fn detecta_voice_id_duplicado() {
-        let v1 = Voice { voice_id: 0, elements: vec![] };
-        let v2 = Voice { voice_id: 0, elements: vec![] };
+        let v1 = Voice {
+            voice_id: 0,
+            elements: vec![],
+        };
+        let v2 = Voice {
+            voice_id: 0,
+            elements: vec![],
+        };
         assert_eq!(
             score_44(vec![v1, v2]).validate(),
-            Err(ValidationError::DuplicateVoiceId { measure: 0, voice_id: 0 })
+            Err(ValidationError::DuplicateVoiceId {
+                measure: 0,
+                voice_id: 0
+            })
         );
     }
 
@@ -539,7 +616,11 @@ mod tests {
         };
         assert_eq!(
             score_44(vec![v]).validate(),
-            Err(ValidationError::OverlappingElements { measure: 0, voice_id: 0, at: ElementId(2) })
+            Err(ValidationError::OverlappingElements {
+                measure: 0,
+                voice_id: 0,
+                at: ElementId(2)
+            })
         );
     }
 
@@ -571,7 +652,9 @@ mod tests {
         };
         assert_eq!(
             score_44(vec![v]).validate(),
-            Err(ValidationError::DuplicateElementId { element: ElementId(1) })
+            Err(ValidationError::DuplicateElementId {
+                element: ElementId(1)
+            })
         );
     }
 
@@ -579,17 +662,29 @@ mod tests {
     fn detecta_is_rest_inconsistente() {
         let mut cr = quarter(1, Fraction::ZERO, vec![note(10, 'C', 4)]);
         cr.is_rest = true; // marca como pausa mas tem notas
-        let v = Voice { voice_id: 0, elements: vec![cr] };
+        let v = Voice {
+            voice_id: 0,
+            elements: vec![cr],
+        };
         assert_eq!(
             score_44(vec![v]).validate(),
-            Err(ValidationError::RestNotesMismatch { measure: 0, element: ElementId(1) })
+            Err(ValidationError::RestNotesMismatch {
+                measure: 0,
+                element: ElementId(1)
+            })
         );
     }
 
     #[test]
     fn detecta_chord_symbol_fora_do_compasso() {
-        let v = Voice { voice_id: 0, elements: vec![quarter(1, Fraction::ZERO, vec![note(10, 'C', 4)])] };
-        let cs = ChordSymbol { start: Fraction::ONE, text: "C".into() }; // start == dur do compasso
+        let v = Voice {
+            voice_id: 0,
+            elements: vec![quarter(1, Fraction::ZERO, vec![note(10, 'C', 4)])],
+        };
+        let cs = ChordSymbol {
+            start: Fraction::ONE,
+            text: "C".into(),
+        }; // start == dur do compasso
         assert_eq!(
             score_44_full(vec![v], vec![], vec![cs]).validate(),
             Err(ValidationError::ChordSymbolOutOfMeasure { measure: 0 })
@@ -628,21 +723,45 @@ mod tests {
 
     #[test]
     fn detecta_tuplet_invalido() {
-        let v = Voice { voice_id: 0, elements: vec![quarter(1, Fraction::ZERO, vec![note(10, 'C', 4)])] };
-        let t = Tuplet { id: TupletId(100), actual: 0, normal: 2, base: DurationBase::Eighth, members: vec![] };
+        let v = Voice {
+            voice_id: 0,
+            elements: vec![quarter(1, Fraction::ZERO, vec![note(10, 'C', 4)])],
+        };
+        let t = Tuplet {
+            id: TupletId(100),
+            actual: 0,
+            normal: 2,
+            base: DurationBase::Eighth,
+            members: vec![],
+        };
         assert_eq!(
             score_44_full(vec![v], vec![t], vec![]).validate(),
-            Err(ValidationError::InvalidTuplet { measure: 0, tuplet: TupletId(100) })
+            Err(ValidationError::InvalidTuplet {
+                measure: 0,
+                tuplet: TupletId(100)
+            })
         );
     }
 
     #[test]
     fn detecta_membro_de_tuplet_inexistente() {
-        let v = Voice { voice_id: 0, elements: vec![quarter(1, Fraction::ZERO, vec![note(10, 'C', 4)])] };
-        let t = Tuplet { id: TupletId(100), actual: 3, normal: 2, base: DurationBase::Eighth, members: vec![ElementId(999)] };
+        let v = Voice {
+            voice_id: 0,
+            elements: vec![quarter(1, Fraction::ZERO, vec![note(10, 'C', 4)])],
+        };
+        let t = Tuplet {
+            id: TupletId(100),
+            actual: 3,
+            normal: 2,
+            base: DurationBase::Eighth,
+            members: vec![ElementId(999)],
+        };
         assert_eq!(
             score_44_full(vec![v], vec![t], vec![]).validate(),
-            Err(ValidationError::TupletMemberMissing { measure: 0, member: ElementId(999) })
+            Err(ValidationError::TupletMemberMissing {
+                measure: 0,
+                member: ElementId(999)
+            })
         );
     }
 
@@ -650,10 +769,17 @@ mod tests {
     fn detecta_elemento_apontando_tuplet_inexistente() {
         let mut cr = quarter(1, Fraction::ZERO, vec![note(10, 'C', 4)]);
         cr.tuplet = Some(TupletId(777)); // nenhum tuplet 777 no compasso
-        let v = Voice { voice_id: 0, elements: vec![cr] };
+        let v = Voice {
+            voice_id: 0,
+            elements: vec![cr],
+        };
         assert_eq!(
             score_44_full(vec![v], vec![], vec![]).validate(),
-            Err(ValidationError::ElementTupletUnknown { measure: 0, element: ElementId(1), tuplet: TupletId(777) })
+            Err(ValidationError::ElementTupletUnknown {
+                measure: 0,
+                element: ElementId(1),
+                tuplet: TupletId(777)
+            })
         );
     }
 
@@ -664,23 +790,38 @@ mod tests {
             voice_id: 0,
             elements: vec![quarter(1, Fraction::ZERO, vec![note(10, 'C', 4)])], // tuplet: None
         };
-        let t = Tuplet { id: TupletId(100), actual: 3, normal: 2, base: DurationBase::Eighth, members: vec![ElementId(1)] };
+        let t = Tuplet {
+            id: TupletId(100),
+            actual: 3,
+            normal: 2,
+            base: DurationBase::Eighth,
+            members: vec![ElementId(1)],
+        };
         assert_eq!(
             score_44_full(vec![v], vec![t], vec![]).validate(),
-            Err(ValidationError::TupletMembershipInconsistent { measure: 0, tuplet: TupletId(100) })
+            Err(ValidationError::TupletMembershipInconsistent {
+                measure: 0,
+                tuplet: TupletId(100)
+            })
         );
     }
 
     #[test]
     fn detecta_time_signature_invalida() {
-        let v = Voice { voice_id: 0, elements: vec![] };
+        let v = Voice {
+            voice_id: 0,
+            elements: vec![],
+        };
         let score = Score {
             title: "t".into(),
             tempo_bpm: 120,
             staff_type: StaffType::GrandStaff,
             measures: vec![Measure {
                 index: 0,
-                time_signature: Some(TimeSignature { numerator: 4, denominator: 0 }),
+                time_signature: Some(TimeSignature {
+                    numerator: 4,
+                    denominator: 0,
+                }),
                 key_signature: Some(0),
                 chord_symbols: vec![],
                 voices: vec![v],
@@ -689,7 +830,11 @@ mod tests {
         };
         assert_eq!(
             score.validate(),
-            Err(ValidationError::InvalidTimeSignature { measure: 0, numerator: 4, denominator: 0 })
+            Err(ValidationError::InvalidTimeSignature {
+                measure: 0,
+                numerator: 4,
+                denominator: 0
+            })
         );
     }
 }

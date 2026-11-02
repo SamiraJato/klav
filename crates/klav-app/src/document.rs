@@ -24,7 +24,11 @@ pub struct Tab {
 impl Tab {
     /// Aba inicial com a partitura de exemplo.
     pub fn sample() -> Self {
-        Tab { path: None, score: sample_score(), selected: None }
+        Tab {
+            path: None,
+            score: sample_score(),
+            selected: None,
+        }
     }
 
     /// Título exibido: nome do arquivo, ou o título da partitura se não salva.
@@ -48,11 +52,18 @@ pub fn open_file(
 ) {
     match klav_io::load_from_path(&path) {
         Ok(s) => {
-            let existing = tabs.read().iter().position(|t| t.path.as_deref() == Some(path.as_path()));
+            let existing = tabs
+                .read()
+                .iter()
+                .position(|t| t.path.as_deref() == Some(path.as_path()));
             match existing {
                 Some(i) => active.set(i),
                 None => {
-                    tabs.write().push(Tab { path: Some(path.clone()), score: s, selected: None });
+                    tabs.write().push(Tab {
+                        path: Some(path.clone()),
+                        score: s,
+                        selected: None,
+                    });
                     let i = tabs.read().len() - 1;
                     active.set(i);
                 }
@@ -95,7 +106,16 @@ pub fn close_tab(
 /// Score de exemplo: escala de Dó subindo em dois compassos 4/4.
 pub fn sample_score() -> Score {
     let q = Fraction::new(1, 4);
-    let steps = [('C', 4), ('D', 4), ('E', 4), ('F', 4), ('G', 4), ('A', 4), ('B', 4), ('C', 5)];
+    let steps = [
+        ('C', 4),
+        ('D', 4),
+        ('E', 4),
+        ('F', 4),
+        ('G', 4),
+        ('A', 4),
+        ('B', 4),
+        ('C', 5),
+    ];
 
     let mut measures = Vec::new();
     for m in 0..2u32 {
@@ -120,13 +140,19 @@ pub fn sample_score() -> Score {
         measures.push(Measure {
             index: m,
             time_signature: if m == 0 {
-                Some(TimeSignature { numerator: 4, denominator: 4 })
+                Some(TimeSignature {
+                    numerator: 4,
+                    denominator: 4,
+                })
             } else {
                 None
             },
             key_signature: Some(0),
             chord_symbols: vec![],
-            voices: vec![Voice { voice_id: 0, elements }],
+            voices: vec![Voice {
+                voice_id: 0,
+                elements,
+            }],
             tuplets: vec![],
         });
     }

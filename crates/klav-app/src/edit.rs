@@ -80,7 +80,10 @@ mod tests {
     #[test]
     fn preserva_o_acidente() {
         let p = step_pitch(Pitch::new('C', 4, Some(Accidental::Sharp)), true);
-        assert_eq!((p.step, p.octave, p.accidental), ('D', 4, Some(Accidental::Sharp)));
+        assert_eq!(
+            (p.step, p.octave, p.accidental),
+            ('D', 4, Some(Accidental::Sharp))
+        );
     }
 
     #[test]

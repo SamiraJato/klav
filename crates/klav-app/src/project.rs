@@ -24,7 +24,11 @@ fn scan_into(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
         let p = entry.path();
         if p.is_dir() {
             scan_into(&p, out, depth + 1);
-        } else if p.extension().map(|e| e.eq_ignore_ascii_case("klav")).unwrap_or(false) {
+        } else if p
+            .extension()
+            .map(|e| e.eq_ignore_ascii_case("klav"))
+            .unwrap_or(false)
+        {
             out.push(p);
         }
     }
