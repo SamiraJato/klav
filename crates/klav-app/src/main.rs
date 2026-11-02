@@ -3,14 +3,18 @@
 //! Frontend em Dioxus (Rust/WASM), rodando como janela desktop via webview nativo.
 //! Consome a geometria do `klav-layout` com os tipos do core direto (sem serialização).
 
-use dioxus::desktop::use_window;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
+
+use dioxus::desktop::{use_window, Config, LogicalSize, WindowBuilder};
 use dioxus::prelude::*;
 
 use klav_core::{
-    ChordOrRest, Clef, Duration, DurationBase, ElementId, Fraction, Measure, Note, NoteId, Pitch,
-    Score, StaffType, TimeSignature, Voice,
+    ChordOrRest, Clef, Duration as NoteDuration, DurationBase, ElementId, Fraction, Measure, Note,
+    NoteId, Pitch, Score, StaffType, TimeSignature, Voice,
 };
-use klav_layout::{layout_single_staff, StaffLayout};
+use klav_engine::{render_events, total_duration_whole, whole_to_seconds, MidiEvent, MidiMessage};
+use klav_layout::{layout_single_staff, StaffLayout, CLEF_WIDTH, MARGIN, SPACE_PER_WHOLE};
 
 /// Fonte Bravura (SMuFL, SIL OFL) embarcada no binário.
 const BRAVURA_WOFF2: &[u8] = include_bytes!("../assets/Bravura.woff2");
@@ -20,6 +24,10 @@ const SP_PX: f64 = 10.0;
 const LEFT: f64 = 16.0;
 const TOP: f64 = 60.0;
 
+// Teclado de 88 teclas.
+const WHITE_W: f64 = 15.0;
+const BLACK_W: f64 = 9.0;
+
 fn px_x(x_sp: f64) -> f64 {
     LEFT + x_sp * SP_PX
 }
@@ -28,7 +36,15 @@ fn px_y(y_sp: f64) -> f64 {
 }
 
 fn main() {
-    dioxus::launch(App);
+    // `always_on_top(false)` sobrescreve o default de debug do Dioxus (que fixa a janela
+    // sobre tudo durante o desenvolvimento).
+    let window = WindowBuilder::new()
+        .with_title("klav")
+        .with_always_on_top(false)
+        .with_inner_size(LogicalSize::new(1000.0, 640.0));
+    dioxus::LaunchBuilder::desktop()
+        .with_cfg(Config::new().with_window(window))
+        .launch(App);
 }
 
 #[component]
@@ -48,35 +64,46 @@ fn App() -> Element {
 
     let w_open = window.clone();
     let open = move |_| {
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("klav", &["klav"])
-            .set_parent(&w_open.window)
-            .pick_file()
-        {
-            match klav_io::load_from_path(&path) {
-                Ok(s) => {
-                    score.set(s);
-                    selected.set(None);
-                    status.set(format!("aberto: {}", path.display()));
+        let w = w_open.clone();
+        spawn(async move {
+            let picked = rfd::AsyncFileDialog::new()
+                .add_filter("klav", &["klav"])
+                .set_parent(&w.window)
+                .pick_file()
+                .await;
+            if let Some(handle) = picked {
+                let path = handle.path().to_path_buf();
+                match klav_io::load_from_path(&path) {
+                    Ok(s) => {
+                        score.set(s);
+                        selected.set(None);
+                        status.set(format!("aberto: {}", path.display()));
+                    }
+                    Err(e) => status.set(format!("erro ao abrir: {e}")),
                 }
-                Err(e) => status.set(format!("erro ao abrir: {e}")),
             }
-        }
+        });
     };
 
     let w_save = window.clone();
     let save = move |_| {
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("klav", &["klav"])
-            .set_file_name("partitura.klav")
-            .set_parent(&w_save.window)
-            .save_file()
-        {
-            match klav_io::save_to_path(&score.read(), &path) {
-                Ok(()) => status.set(format!("salvo: {}", path.display())),
-                Err(e) => status.set(format!("erro ao salvar: {e}")),
+        let w = w_save.clone();
+        spawn(async move {
+            let picked = rfd::AsyncFileDialog::new()
+                .add_filter("klav", &["klav"])
+                .set_file_name("partitura.klav")
+                .set_parent(&w.window)
+                .save_file()
+                .await;
+            if let Some(handle) = picked {
+                let path = handle.path().to_path_buf();
+                let result = klav_io::save_to_path(&score.read(), &path);
+                match result {
+                    Ok(()) => status.set(format!("salvo: {}", path.display())),
+                    Err(e) => status.set(format!("erro ao salvar: {e}")),
+                }
             }
-        }
+        });
     };
 
     // Edição: move a altura da nota selecionada um passo diatônico para cima/baixo.
@@ -91,9 +118,51 @@ fn App() -> Element {
         }
     };
 
+    // --- Playback ---
+    let tempo = score.read().tempo_bpm;
+    // Intervalos (tecla, início, fim) em semibreves, recalculados quando o Score muda.
+    let intervals = use_memo(move || build_intervals(&render_events(&score.read())));
+    // Duração total da peça em segundos.
+    let total_secs = use_memo(move || whole_to_seconds(total_duration_whole(&score.read()), tempo));
+
+    let mut playing = use_signal(|| false);
+    let mut position = use_signal(|| 0.0_f64); // posição atual em segundos
+
+    // Relógio: avança a posição em tempo real enquanto estiver tocando (~60 fps).
+    use_future(move || async move {
+        let mut last = Instant::now();
+        loop {
+            futures_timer::Delay::new(Duration::from_millis(16)).await;
+            let now = Instant::now();
+            let dt = (now - last).as_secs_f64();
+            last = now;
+            if *playing.peek() {
+                let total = *total_secs.peek();
+                let np = *position.peek() + dt;
+                if np >= total {
+                    position.set(total);
+                    playing.set(false);
+                } else {
+                    position.set(np);
+                }
+            }
+        }
+    });
+
+    let play_pause = move |_| {
+        let is_playing = *playing.peek();
+        if !is_playing && *position.peek() >= *total_secs.peek() {
+            position.set(0.0); // recomeça se estava no fim
+        }
+        playing.set(!is_playing);
+    };
+    let stop = move |_| {
+        playing.set(false);
+        position.set(0.0);
+    };
+
     let lay: StaffLayout = layout.read().clone();
     let title = score.read().title.clone();
-    let tempo = score.read().tempo_bpm;
     let sel_label = match selected() {
         Some(id) => format!("nota selecionada: id {id}"),
         None => "clique numa nota".to_string(),
@@ -101,6 +170,25 @@ fn App() -> Element {
 
     let width_px = px_x(lay.width) + LEFT;
     let height_px = px_y(9.0);
+
+    // Posição musical atual (em semibreves) e cursor na pauta.
+    let pos_secs = position();
+    let total = total_secs();
+    let pos_whole = pos_secs * tempo as f64 / 240.0;
+    let cursor_x = px_x(MARGIN + CLEF_WIDTH + SPACE_PER_WHOLE * pos_whole);
+    let show_cursor = playing() || pos_secs > 0.0;
+
+    // Teclas que soam agora (para acender no teclado).
+    let active: HashSet<u8> = {
+        let iv = intervals.read();
+        iv.iter()
+            .filter(|(_, s, e)| *s <= pos_whole && pos_whole < *e)
+            .map(|(k, _, _)| *k)
+            .collect()
+    };
+
+    // Geometria do teclado de 88 teclas (A0=21 .. C8=108).
+    let (whites, blacks, kb_width) = keyboard_geometry();
 
     rsx! {
         style { {css} }
@@ -112,11 +200,15 @@ fn App() -> Element {
                 span { class: "divider" }
                 button { class: "btn", disabled: selected().is_none(), onclick: up, "♪ ↑" }
                 button { class: "btn", disabled: selected().is_none(), onclick: down, "♪ ↓" }
+                span { class: "divider" }
+                button { class: "btn", onclick: play_pause, if playing() { "⏸ Pausar" } else { "▶ Tocar" } }
+                button { class: "btn", onclick: stop, "⏹ Parar" }
             }
             div { class: "statusbar",
                 span { "{title}" }
                 span { "• {tempo} BPM" }
                 span { "• {lay.glyphs.len()} glifos" }
+                span { "• ⏱ {pos_secs:.1}s / {total:.1}s" }
                 span { class: "sel", "• {sel_label}" }
             }
             div { class: "canvas",
@@ -151,6 +243,34 @@ fn App() -> Element {
                             }
                         }
                     }
+                    // cursor de playback
+                    if show_cursor {
+                        line {
+                            x1: "{cursor_x}", y1: "{px_y(-1.0)}",
+                            x2: "{cursor_x}", y2: "{px_y(5.0)}",
+                            stroke: "crimson", stroke_width: "1.5",
+                        }
+                    }
+                }
+            }
+            // teclado de 88 teclas (acende as notas que soam)
+            div { class: "keyboard",
+                svg { width: "{kb_width}", height: "70",
+                    for (midi, x) in whites.iter() {
+                        rect {
+                            x: "{x}", y: "0", width: "{WHITE_W - 1.0}", height: "70",
+                            rx: "2",
+                            fill: if active.contains(midi) { "crimson" } else { "#fff" },
+                            stroke: "#333", stroke_width: "1",
+                        }
+                    }
+                    for (midi, x) in blacks.iter() {
+                        rect {
+                            x: "{x}", y: "0", width: "{BLACK_W}", height: "44",
+                            rx: "1",
+                            fill: if active.contains(midi) { "crimson" } else { "#111" },
+                        }
+                    }
                 }
             }
             if !status.read().is_empty() {
@@ -174,7 +294,7 @@ fn sample_score() -> Score {
             elements.push(ChordOrRest {
                 id: ElementId(nid),
                 start: q * Fraction::new(i as i64, 1),
-                duration: Duration::new(DurationBase::Quarter, 0),
+                duration: NoteDuration::new(DurationBase::Quarter, 0),
                 is_rest: false,
                 notes: vec![Note {
                     id: NoteId(nid),
@@ -205,6 +325,43 @@ fn sample_score() -> Score {
         staff_type: StaffType::Single(Clef::Treble),
         measures,
     }
+}
+
+/// Pareia NoteOn/NoteOff em intervalos (tecla, início, fim) em semibreves.
+fn build_intervals(events: &[MidiEvent]) -> Vec<(u8, f64, f64)> {
+    let mut open: HashMap<u8, f64> = HashMap::new();
+    let mut out = Vec::new();
+    for e in events {
+        match e.message {
+            MidiMessage::NoteOn { key, .. } => {
+                open.insert(key, e.time.to_f64());
+            }
+            MidiMessage::NoteOff { key } => {
+                if let Some(start) = open.remove(&key) {
+                    out.push((key, start, e.time.to_f64()));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Geometria das 88 teclas (A0=21 .. C8=108): (brancas, pretas, largura total).
+fn keyboard_geometry() -> (Vec<(u8, f64)>, Vec<(u8, f64)>, f64) {
+    let mut whites = Vec::new();
+    let mut blacks = Vec::new();
+    let mut wx = 0.0;
+    for midi in 21u8..=108 {
+        let pc = midi % 12;
+        if matches!(pc, 1 | 3 | 6 | 8 | 10) {
+            // tecla preta: centrada na fronteira entre a branca anterior e a próxima
+            blacks.push((midi, wx - BLACK_W / 2.0));
+        } else {
+            whites.push((midi, wx));
+            wx += WHITE_W;
+        }
+    }
+    (whites, blacks, wx)
 }
 
 /// Move a nota selecionada um passo diatônico. Retorna `true` se mudou algo.
@@ -279,6 +436,7 @@ fn build_css() -> String {
         }}
         .statusbar .sel {{ margin-left: auto; color: crimson; }}
         .canvas {{ padding: 16px; overflow: auto; background: #fff; }}
+        .keyboard {{ padding: 8px 16px; background: #faf8f5; border-top: 1px solid #ddd; overflow-x: auto; }}
         .toast {{
             position: fixed; bottom: 14px; right: 14px;
             background: #1e1e2e; color: #cdd6f4; padding: 8px 14px;
