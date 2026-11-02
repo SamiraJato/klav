@@ -308,3 +308,42 @@ não precisa de mapeamento inverso de coordenadas), mouse depois.
 - **Fatia 6 — Multi-pauta + Mixer funcional:** Grand Staff completo (2 pautas) e mixer por pauta.
 - **Fatia 7 — Tauri:** empacotamento/distribuição.
 - **Fatia 2c (quando quiser):** SoundFont para som de piano real no lugar da síntese senoidal.
+
+---
+
+## 8. Convenções de implementação (padrões a seguir)
+
+Consolidadas a partir das correções de arquitetura de 2026-11-02. Valem para o editor de
+conteúdo, undo/redo, import (MusicXML/MIDI) e multi-pauta que vêm a seguir.
+
+1. **Dado externo falha com erro, nunca com panic.** Todo tipo com invariante de construção
+   expõe um construtor falível (`try_new → Option`/`Result`) e um construtor conhecido (`new`,
+   que pode panicar como *contrato* para valores internos). Entrada externa — desserialização,
+   parsing, import futuro — passa pelo caminho falível. Em `serde`, use `#[serde(try_from = "Raw")]`
+   para validar/normalizar no load sem mudar o formato de serialização. (Ex.: [`Fraction`] §3.1.)
+
+2. **Invariante ⇒ checagem + variante + teste.** Toda regra do modelo tem (a) checagem em
+   `Score::validate()`, (b) uma variante específica de `ValidationError` com contexto (compasso,
+   id envolvido) — nada de mensagem genérica — e (c) um teste de erro. Consumidores (engine,
+   layout) **assumem** os invariantes; por isso `klav-io` valida no load antes de entregar o `Score`.
+   Quem cria dado novo (editor, import) roda `validate()` antes de persistir/tocar.
+
+3. **Escopo de unicidade dos IDs** (respeitar ao gerar ids no editor/import): `NoteId` e
+   `ElementId` são únicos **no documento**; `TupletId` é único **por compasso**. Ties referenciam
+   `NoteId` global; membros de tuplet referenciam `ElementId` do mesmo compasso. A associação
+   elemento↔tuplet é bidirecional e coerente.
+
+4. **Lógica pura mora nas crates de biblioteca; o app só compõe.** Regra prática: se dá para
+   testar sem abrir janela ou dispositivo de áudio, **não** fica em `klav-app`. Transformações do
+   modelo são do `klav-engine`/`klav-core`/`klav-layout` (ex.: `render_events`, `key_intervals`).
+   No `klav-app`, `main.rs` é só composição da UI; funções que mexem em estado recebem os `Signal`
+   explicitamente e vivem em módulos por responsabilidade (`document`, `edit`, `project`, `keyboard`,
+   `theme`). Toda lógica extraída ganha teste unitário.
+
+5. **Tempo é `Fraction`; `f64` só na borda de áudio/render.** `Fraction::to_f64()` é ponto de
+   *saída* (posição de cursor, segundos, pixels), nunca realimenta a lógica rítmica. (Princípio §1.2.)
+
+6. **Eventos MIDI do engine não carregam identidade de nota — só `key`.** O pareamento
+   NoteOn/NoteOff é **FIFO por tecla** (`key_intervals`), o que preserva instâncias simultâneas da
+   mesma altura. Qualquer consumidor novo (export MIDI, outro sintetizador) deve preservar múltiplas
+   instâncias por tecla, nunca assumir uma só.
