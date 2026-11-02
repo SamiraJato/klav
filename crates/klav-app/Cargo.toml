@@ -10,5 +10,7 @@ repository.workspace = true
 klav-core = { path = "../klav-core" }
 klav-io = { path = "../klav-io" }
 klav-layout = { path = "../klav-layout" }
+klav-engine = { path = "../klav-engine" }
 dioxus = { version = "0.6", features = ["desktop"] }
 rfd = "0.15"
+futures-timer = "3"
