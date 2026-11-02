@@ -29,6 +29,12 @@ pub enum ValidationError {
     TupletMemberMissing { measure: u32, member: ElementId },
     /// Nenhum compasso tem fórmula de compasso e nenhuma foi herdada.
     MissingInitialTimeSignature,
+    /// Fórmula de compasso com numerador ou denominador zero (duração indefinida).
+    InvalidTimeSignature {
+        measure: u32,
+        numerator: u8,
+        denominator: u8,
+    },
 }
 
 impl Score {
@@ -51,6 +57,15 @@ impl Score {
 
         for m in &self.measures {
             if let Some(ts) = m.time_signature {
+                // Rejeita denominador/numerador zero ANTES de calcular a duração
+                // (Fraction::new faria panic com denominador zero).
+                if ts.denominator == 0 || ts.numerator == 0 {
+                    return Err(ValidationError::InvalidTimeSignature {
+                        measure: m.index,
+                        numerator: ts.numerator,
+                        denominator: ts.denominator,
+                    });
+                }
                 current_ts = Some(ts.measure_duration());
             }
             let measure_dur = match current_ts {

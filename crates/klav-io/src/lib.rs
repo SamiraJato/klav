@@ -244,6 +244,30 @@ mod tests {
     }
 
     #[test]
+    fn time_signature_denominador_zero_e_erro_nao_panic() {
+        // Corrompe a fórmula de compasso para 4/0 no JSON de um score válido.
+        let json = to_json_string(&sample_score()).unwrap();
+        let bad = json.replacen("\"denominator\": 4", "\"denominator\": 0", 1);
+        match from_json_str(&bad) {
+            Err(KlavIoError::Invalid(_)) => {}
+            other => panic!("esperava Invalid por denominador zero, veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fraction_denominador_zero_e_erro_de_parsing() {
+        // Injeta uma Fraction com den=0 num `start`; deve falhar já na desserialização.
+        let json = to_json_string(&sample_score()).unwrap();
+        let bad = json.replacen("\"den\": 4", "\"den\": 0", 1);
+        match from_json_str(&bad) {
+            Err(KlavIoError::Json(_)) => {}
+            other => panic!("esperava Json por Fraction den=0, veio {other:?}"),
+        }
+        // E também pelo caminho unchecked (a validação de versão não mascara o erro).
+        assert!(matches!(from_json_str_unchecked(&bad), Err(KlavIoError::Json(_))));
+    }
+
+    #[test]
     fn round_trip_em_arquivo() {
         let score = sample_score();
         let mut path = std::env::temp_dir();

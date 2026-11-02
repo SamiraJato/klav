@@ -9,22 +9,53 @@ use core::ops::{Add, Mul, Sub};
 use serde::{Deserialize, Serialize};
 
 /// Fração racional `num/den`, sempre reduzida, `den > 0`.
+///
+/// A desserialização passa por [`FractionRaw`] + [`TryFrom`]: um `den == 0` vindo de
+/// um `.klav` corrompido vira erro de parsing (não panic), e a fração é renormalizada
+/// (reduzida, denominador positivo) mesmo que o arquivo traga um estado não canônico.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(try_from = "FractionRaw")]
 pub struct Fraction {
     num: i64,
     den: i64,
+}
+
+/// Forma crua lida do JSON, antes de validar/normalizar. Espelha os campos de [`Fraction`],
+/// preservando o formato de serialização atual (`{"num":_,"den":_}`).
+#[derive(Deserialize)]
+struct FractionRaw {
+    num: i64,
+    den: i64,
+}
+
+impl TryFrom<FractionRaw> for Fraction {
+    type Error = &'static str;
+
+    fn try_from(raw: FractionRaw) -> Result<Self, Self::Error> {
+        Fraction::try_new(raw.num, raw.den).ok_or("Fraction com denominador zero")
+    }
 }
 
 impl Fraction {
     pub const ZERO: Fraction = Fraction { num: 0, den: 1 };
     pub const ONE: Fraction = Fraction { num: 1, den: 1 };
 
-    /// Cria uma fração reduzida. `den == 0` faz pânico (divisão por zero não é musical).
-    pub fn new(num: i64, den: i64) -> Fraction {
-        assert!(den != 0, "Fraction com denominador zero");
+    /// Cria uma fração reduzida, ou `None` se `den == 0` (divisão por zero não é musical).
+    pub fn try_new(num: i64, den: i64) -> Option<Fraction> {
+        if den == 0 {
+            return None;
+        }
         let mut f = Fraction { num, den };
         f.normalize();
-        f
+        Some(f)
+    }
+
+    /// Cria uma fração reduzida. `den == 0` faz pânico (divisão por zero não é musical).
+    ///
+    /// Use [`Fraction::try_new`] para dados externos; este construtor é para valores
+    /// internos conhecidos (literais, resultados de aritmética com denominador não nulo).
+    pub fn new(num: i64, den: i64) -> Fraction {
+        Fraction::try_new(num, den).expect("Fraction com denominador zero")
     }
 
     #[inline]
@@ -170,5 +201,34 @@ mod tests {
     fn zero_e_one() {
         assert!(Fraction::ZERO.is_zero());
         assert_eq!(Fraction::ZERO + Fraction::ONE, Fraction::ONE);
+    }
+
+    #[test]
+    fn try_new_rejeita_denominador_zero() {
+        assert_eq!(Fraction::try_new(1, 0), None);
+        assert_eq!(Fraction::try_new(3, 4), Some(Fraction::new(3, 4)));
+    }
+
+    #[test]
+    fn desserializar_denominador_zero_e_erro() {
+        let err = serde_json::from_str::<Fraction>(r#"{"num":1,"den":0}"#);
+        assert!(err.is_err(), "den==0 deveria falhar na desserialização, veio {err:?}");
+    }
+
+    #[test]
+    fn desserializar_normaliza_estado_nao_canonico() {
+        // 2/4 não reduzido e denominador negativo devem virar a forma canônica.
+        let f: Fraction = serde_json::from_str(r#"{"num":2,"den":4}"#).unwrap();
+        assert_eq!((f.num(), f.den()), (1, 2));
+        let g: Fraction = serde_json::from_str(r#"{"num":1,"den":-2}"#).unwrap();
+        assert_eq!((g.num(), g.den()), (-1, 2));
+    }
+
+    #[test]
+    fn round_trip_de_serializacao_preservado() {
+        let f = Fraction::new(3, 16);
+        let json = serde_json::to_string(&f).unwrap();
+        assert_eq!(json, r#"{"num":3,"den":16}"#);
+        assert_eq!(serde_json::from_str::<Fraction>(&json).unwrap(), f);
     }
 }
