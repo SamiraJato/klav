@@ -3,11 +3,17 @@
 //! Frontend em Dioxus (Rust/WASM), rodando como janela desktop via webview nativo.
 //! Consome a geometria do `klav-layout` com os tipos do core direto (sem serialização).
 
+mod synth;
+
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use dioxus::desktop::{use_window, Config, LogicalSize, WindowBuilder};
 use dioxus::prelude::*;
+
+use synth::{SynthCmd, SynthRuntime};
 
 use klav_core::{
     ChordOrRest, Clef, Duration as NoteDuration, DurationBase, ElementId, Fraction, Measure, Note,
@@ -128,22 +134,61 @@ fn App() -> Element {
     let mut playing = use_signal(|| false);
     let mut position = use_signal(|| 0.0_f64); // posição atual em segundos
 
-    // Relógio: avança a posição em tempo real enquanto estiver tocando (~60 fps).
-    use_future(move || async move {
-        let mut last = Instant::now();
-        loop {
-            futures_timer::Delay::new(Duration::from_millis(16)).await;
-            let now = Instant::now();
-            let dt = (now - last).as_secs_f64();
-            last = now;
-            if *playing.peek() {
-                let total = *total_secs.peek();
-                let np = *position.peek() + dt;
-                if np >= total {
-                    position.set(total);
-                    playing.set(false);
-                } else {
+    // Runtime de áudio (stream + canal), reconstruível ao trocar o dispositivo de saída.
+    let runtime = use_hook(|| Rc::new(RefCell::new(SynthRuntime::default_output())));
+    let devices = use_hook(synth::list_output_devices);
+    let mut device_name = use_signal(|| synth::default_output_name().unwrap_or_default());
+
+    // Relógio: avança a posição em tempo real e dispara NoteOn/NoteOff no synth (~60 fps).
+    let rt_clock = runtime.clone();
+    use_future(move || {
+        let rt = rt_clock.clone();
+        async move {
+            let mut last = Instant::now();
+            // Cada nota é identificada por (tecla, início) para separar repetições da mesma altura.
+            let mut sounding: HashSet<(u8, i64)> = HashSet::new();
+            loop {
+                futures_timer::Delay::new(Duration::from_millis(16)).await;
+                let now = Instant::now();
+                let dt = (now - last).as_secs_f64();
+                last = now;
+
+                // sender atual (reflete troca de dispositivo de saída)
+                let tx = rt.borrow().tx.clone();
+
+                if *playing.peek() {
+                    let total = *total_secs.peek();
+                    let mut np = *position.peek() + dt;
+                    if np >= total {
+                        np = total;
+                        playing.set(false);
+                    }
                     position.set(np);
+
+                    // notas que soam na nova posição, identificadas por (tecla, início)
+                    let pw = np * tempo as f64 / 240.0;
+                    let current: HashSet<(u8, i64)> = intervals
+                        .peek()
+                        .iter()
+                        .filter(|(_, s, e)| *s <= pw && pw < *e)
+                        .map(|(k, s, _)| (*k, (s * 1_000_000.0) as i64))
+                        .collect();
+                    if let Some(tx) = &tx {
+                        // NoteOff antes de NoteOn para re-articular notas repetidas na fronteira.
+                        for (k, _) in sounding.difference(&current) {
+                            let _ = tx.send(SynthCmd::NoteOff(*k));
+                        }
+                        for (k, _) in current.difference(&sounding) {
+                            let _ = tx.send(SynthCmd::NoteOn(*k));
+                        }
+                    }
+                    sounding = current;
+                } else if !sounding.is_empty() {
+                    // parou/pausou: silencia tudo
+                    if let Some(tx) = &tx {
+                        let _ = tx.send(SynthCmd::AllOff);
+                    }
+                    sounding.clear();
                 }
             }
         }
@@ -156,6 +201,15 @@ fn App() -> Element {
         }
         playing.set(!is_playing);
     };
+    let rt_sel = runtime.clone();
+    let change_device = move |evt: Event<FormData>| {
+        let name = evt.value();
+        device_name.set(name.clone());
+        if let Some(dev) = synth::device_by_name(&name) {
+            *rt_sel.borrow_mut() = SynthRuntime::on_device(&dev);
+        }
+    };
+
     let stop = move |_| {
         playing.set(false);
         position.set(0.0);
@@ -203,6 +257,12 @@ fn App() -> Element {
                 span { class: "divider" }
                 button { class: "btn", onclick: play_pause, if playing() { "⏸ Pausar" } else { "▶ Tocar" } }
                 button { class: "btn", onclick: stop, "⏹ Parar" }
+                span { class: "divider" }
+                select { class: "device", title: "Saída de áudio", onchange: change_device,
+                    for d in devices.iter() {
+                        option { value: "{d}", selected: *d == device_name(), "🔊 {d}" }
+                    }
+                }
             }
             div { class: "statusbar",
                 span { "{title}" }
@@ -429,6 +489,10 @@ fn build_css() -> String {
         .btn:hover {{ background: #585b70; }}
         .btn:disabled {{ opacity: 0.4; cursor: default; }}
         .divider {{ width: 1px; align-self: stretch; background: #45475a; margin: 0 4px; }}
+        .device {{
+            background: #45475a; color: #cdd6f4; border: none; border-radius: 4px;
+            padding: 5px 8px; font-size: 12px; max-width: 220px; cursor: pointer;
+        }}
         .statusbar {{
             background: #f3f3f3; border-bottom: 1px solid #ddd;
             padding: 6px 14px; font-size: 12px; color: #555;
