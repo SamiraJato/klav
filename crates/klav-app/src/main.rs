@@ -1,0 +1,306 @@
+//! klav-app — Fatia 1: renderiza um `Score` em SVG (com a fonte Bravura) e abre/salva `.klav`.
+//!
+//! Frontend em Dioxus (Rust/WASM), rodando como janela desktop via webview nativo.
+//! Consome a geometria do `klav-layout` com os tipos do core direto (sem serialização).
+
+use dioxus::desktop::use_window;
+use dioxus::prelude::*;
+
+use klav_core::{
+    ChordOrRest, Clef, Duration, DurationBase, ElementId, Fraction, Measure, Note, NoteId, Pitch,
+    Score, StaffType, TimeSignature, Voice,
+};
+use klav_layout::{layout_single_staff, StaffLayout};
+
+/// Fonte Bravura (SMuFL, SIL OFL) embarcada no binário.
+const BRAVURA_WOFF2: &[u8] = include_bytes!("../assets/Bravura.woff2");
+
+/// Pixels por staff-space. No SMuFL, 1 em da fonte = 4 staff-spaces.
+const SP_PX: f64 = 10.0;
+const LEFT: f64 = 16.0;
+const TOP: f64 = 60.0;
+
+fn px_x(x_sp: f64) -> f64 {
+    LEFT + x_sp * SP_PX
+}
+fn px_y(y_sp: f64) -> f64 {
+    TOP + y_sp * SP_PX
+}
+
+fn main() {
+    dioxus::launch(App);
+}
+
+#[component]
+fn App() -> Element {
+    let mut score = use_signal(sample_score);
+    let mut selected = use_signal(|| Option::<u64>::None);
+    let mut status = use_signal(String::new);
+
+    // Geometria recalculada automaticamente quando o Score muda (tipos do core, sem serializar).
+    let layout = use_memo(move || layout_single_staff(&score.read()));
+
+    // CSS (com a Bravura embarcada como data URL) montado uma única vez.
+    let css = use_hook(build_css);
+
+    // Janela nativa — usada como pai dos diálogos (corrige o z-order no Windows).
+    let window = use_window();
+
+    let w_open = window.clone();
+    let open = move |_| {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("klav", &["klav"])
+            .set_parent(&w_open.window)
+            .pick_file()
+        {
+            match klav_io::load_from_path(&path) {
+                Ok(s) => {
+                    score.set(s);
+                    selected.set(None);
+                    status.set(format!("aberto: {}", path.display()));
+                }
+                Err(e) => status.set(format!("erro ao abrir: {e}")),
+            }
+        }
+    };
+
+    let w_save = window.clone();
+    let save = move |_| {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("klav", &["klav"])
+            .set_file_name("partitura.klav")
+            .set_parent(&w_save.window)
+            .save_file()
+        {
+            match klav_io::save_to_path(&score.read(), &path) {
+                Ok(()) => status.set(format!("salvo: {}", path.display())),
+                Err(e) => status.set(format!("erro ao salvar: {e}")),
+            }
+        }
+    };
+
+    // Edição: move a altura da nota selecionada um passo diatônico para cima/baixo.
+    let up = move |_| {
+        if transpose_selected(score, selected, true) {
+            status.set("nota movida ↑".into());
+        }
+    };
+    let down = move |_| {
+        if transpose_selected(score, selected, false) {
+            status.set("nota movida ↓".into());
+        }
+    };
+
+    let lay: StaffLayout = layout.read().clone();
+    let title = score.read().title.clone();
+    let tempo = score.read().tempo_bpm;
+    let sel_label = match selected() {
+        Some(id) => format!("nota selecionada: id {id}"),
+        None => "clique numa nota".to_string(),
+    };
+
+    let width_px = px_x(lay.width) + LEFT;
+    let height_px = px_y(9.0);
+
+    rsx! {
+        style { {css} }
+        div { class: "app",
+            div { class: "titlebar",
+                span { class: "brand", "klav" }
+                button { class: "btn", onclick: open, "Abrir" }
+                button { class: "btn", onclick: save, "Salvar" }
+                span { class: "divider" }
+                button { class: "btn", disabled: selected().is_none(), onclick: up, "♪ ↑" }
+                button { class: "btn", disabled: selected().is_none(), onclick: down, "♪ ↓" }
+            }
+            div { class: "statusbar",
+                span { "{title}" }
+                span { "• {tempo} BPM" }
+                span { "• {lay.glyphs.len()} glifos" }
+                span { class: "sel", "• {sel_label}" }
+            }
+            div { class: "canvas",
+                svg { width: "{width_px}", height: "{height_px}",
+                    // linhas da pauta
+                    for i in 0..lay.line_count {
+                        line {
+                            x1: "{px_x(0.0)}", y1: "{px_y(i as f64)}",
+                            x2: "{px_x(lay.width)}", y2: "{px_y(i as f64)}",
+                            stroke: "#333", stroke_width: "1",
+                        }
+                    }
+                    // glifos SMuFL (clave, cabeças, pausas) desenhados com a Bravura
+                    for g in lay.glyphs.iter() {
+                        {
+                            let ch = g.glyph.codepoint();
+                            let x = px_x(g.pos.x);
+                            let y = px_y(g.pos.y);
+                            let nid = g.note_id;
+                            let is_sel = nid.is_some() && selected() == nid;
+                            let fill = if is_sel { "crimson" } else { "#111" };
+                            rsx! {
+                                text {
+                                    x: "{x}", y: "{y}",
+                                    font_family: "Bravura",
+                                    font_size: "{SP_PX * 4.0}",
+                                    fill: "{fill}",
+                                    style: if nid.is_some() { "cursor: pointer;" } else { "" },
+                                    onclick: move |_| { if let Some(id) = nid { selected.set(Some(id)); } },
+                                    "{ch}"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !status.read().is_empty() {
+                div { class: "toast", "{status}" }
+            }
+        }
+    }
+}
+
+/// Score de exemplo exibido ao abrir o app: escala de Dó subindo em dois compassos 4/4.
+fn sample_score() -> Score {
+    let q = Fraction::new(1, 4);
+    let steps = [('C', 4), ('D', 4), ('E', 4), ('F', 4), ('G', 4), ('A', 4), ('B', 4), ('C', 5)];
+
+    let mut measures = Vec::new();
+    for m in 0..2u32 {
+        let mut elements = Vec::new();
+        for i in 0..4u64 {
+            let (step, oct) = steps[(m as usize) * 4 + i as usize];
+            let nid = m as u64 * 100 + i;
+            elements.push(ChordOrRest {
+                id: ElementId(nid),
+                start: q * Fraction::new(i as i64, 1),
+                duration: Duration::new(DurationBase::Quarter, 0),
+                is_rest: false,
+                notes: vec![Note {
+                    id: NoteId(nid),
+                    pitch: Pitch::new(step, oct, None),
+                    velocity: 80,
+                    tie_to: None,
+                }],
+                tuplet: None,
+            });
+        }
+        measures.push(Measure {
+            index: m,
+            time_signature: if m == 0 {
+                Some(TimeSignature { numerator: 4, denominator: 4 })
+            } else {
+                None
+            },
+            key_signature: Some(0),
+            chord_symbols: vec![],
+            voices: vec![Voice { voice_id: 0, elements }],
+            tuplets: vec![],
+        });
+    }
+
+    Score {
+        title: "Escala de Dó".into(),
+        tempo_bpm: 120,
+        staff_type: StaffType::Single(Clef::Treble),
+        measures,
+    }
+}
+
+/// Move a nota selecionada um passo diatônico. Retorna `true` se mudou algo.
+fn transpose_selected(mut score: Signal<Score>, selected: Signal<Option<u64>>, up: bool) -> bool {
+    let Some(id) = *selected.peek() else {
+        return false;
+    };
+    let mut changed = false;
+    let mut s = score.write();
+    for m in s.measures.iter_mut() {
+        for v in m.voices.iter_mut() {
+            for cr in v.elements.iter_mut() {
+                for n in cr.notes.iter_mut() {
+                    if n.id.value() == id {
+                        n.pitch = step_pitch(n.pitch, up);
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    changed
+}
+
+/// Sobe/desce uma nota um passo diatônico (C→D→…→B→C+8ª), preservando o acidente.
+fn step_pitch(p: Pitch, up: bool) -> Pitch {
+    const ORDER: [char; 7] = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
+    let Some(idx) = ORDER.iter().position(|&c| c == p.step.to_ascii_uppercase()) else {
+        return p;
+    };
+    let (new_idx, new_oct) = if up {
+        if idx == 6 {
+            (0, p.octave + 1)
+        } else {
+            (idx + 1, p.octave)
+        }
+    } else if idx == 0 {
+        (6, p.octave - 1)
+    } else {
+        (idx - 1, p.octave)
+    };
+    Pitch::new(ORDER[new_idx], new_oct, p.accidental)
+}
+
+/// Monta o CSS do app, embutindo a Bravura como data URL base64.
+fn build_css() -> String {
+    let font_b64 = base64_encode(BRAVURA_WOFF2);
+    format!(
+        r#"
+        @font-face {{
+            font-family: 'Bravura';
+            src: url('data:font/woff2;base64,{font_b64}') format('woff2');
+        }}
+        body {{ margin: 0; }}
+        .app {{ font-family: 'Segoe UI', sans-serif; color: #111; }}
+        .titlebar {{
+            background: #1e1e2e; color: #cdd6f4; padding: 8px 14px;
+            display: flex; align-items: center; gap: 10px;
+        }}
+        .titlebar .brand {{ font-weight: 700; font-size: 15px; margin-right: 6px; }}
+        .btn {{
+            background: #45475a; color: #cdd6f4; border: none; border-radius: 4px;
+            padding: 5px 12px; font-size: 13px; cursor: pointer;
+        }}
+        .btn:hover {{ background: #585b70; }}
+        .btn:disabled {{ opacity: 0.4; cursor: default; }}
+        .divider {{ width: 1px; align-self: stretch; background: #45475a; margin: 0 4px; }}
+        .statusbar {{
+            background: #f3f3f3; border-bottom: 1px solid #ddd;
+            padding: 6px 14px; font-size: 12px; color: #555;
+            display: flex; gap: 10px;
+        }}
+        .statusbar .sel {{ margin-left: auto; color: crimson; }}
+        .canvas {{ padding: 16px; overflow: auto; background: #fff; }}
+        .toast {{
+            position: fixed; bottom: 14px; right: 14px;
+            background: #1e1e2e; color: #cdd6f4; padding: 8px 14px;
+            border-radius: 6px; font-size: 12px;
+        }}
+    "#
+    )
+}
+
+/// Base64 padrão (sem dependência externa) para embutir a fonte como data URL.
+fn base64_encode(input: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(T[((n >> 18) & 63) as usize] as char);
+        out.push(T[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { T[((n >> 6) & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+    }
+    out
+}

@@ -1,0 +1,14 @@
+[package]
+name = "klav-app"
+description = "klav desktop app (Dioxus): renderiza e edita partituras"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+klav-core = { path = "../klav-core" }
+klav-io = { path = "../klav-io" }
+klav-layout = { path = "../klav-layout" }
+dioxus = { version = "0.6", features = ["desktop"] }
+rfd = "0.15"
