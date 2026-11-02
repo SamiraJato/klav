@@ -240,3 +240,29 @@ Regras:
 - **Backend de render:** **SVG** no MVP. `klav-layout` gera geometria **agnóstica** (posições em staff-spaces + glifos SMuFL), então o backend é trocável — na Fase 3 (partituras grandes/Continuous View) pode-se adicionar um backend Canvas/WebGL sem mexer no motor de layout. SVG dá nitidez/impressão (Page View), hit-testing nativo (edição) e estilo por nota (Visual Diff da Fase 4) com menos esforço.
 - **Fonte musical:** **Bravura** (SMuFL, Steinberg, licença SIL OFL — livre e redistribuível). O `klav-layout` fica agnóstico à fonte.
 - **Frontend:** **Dioxus** (UI em Rust/WASM). Decisão validada por dois spikes (Dioxus desktop vs Svelte+WASM) renderizando a mesma cena do `klav-layout` em SVG: os resultados visuais ficaram equivalentes, e o Dioxus venceu por **menos overhead de execução** (um `cargo run` abre a janela, sem Node/Vite/wasm-pack no caminho), **tipos compartilhados com o core sem serialização** e coesão (tudo Rust). O backend desktop usa o webview nativo via Tauri/wry; o build web compila o mesmo código para WASM. SVG continua sendo o backend de desenho dentro do Dioxus.
+
+---
+
+## 7. Plano de fatias do klav-app (revisado em 2026-11-02)
+
+Estado atual: Fatias 1, 2 (playback+áudio) e 3a (esqueleto de IDE) concluídas. A edição hoje
+só **move a altura** de uma nota existente (↑/↓) — ainda **não há adição de conteúdo**.
+
+**Decisão de reprioritização:** amadurecer o **editor** antes de undo/redo e mixer, porque
+(a) sem adicionar notas/compassos o app ainda é quase um visualizador, e (b) undo/redo só tem o
+que desfazer depois que a edição é rica. Entrada **por teclado primeiro** (mais simples que mouse:
+não precisa de mapeamento inverso de coordenadas), mouse depois.
+
+- **Fatia 4 — Editor de conteúdo (prioridade):**
+  - 4a — Adicionar/remover: botão "+ nota" (acrescenta na próxima posição livre do compasso/voz
+    ativa, altura padrão ajustável com ↑/↓ que já existe), "+ compasso", e **deletar** a nota
+    selecionada. Mínimo viável reutilizando as primitivas atuais.
+  - 4b — Entrada por teclado: tecla A–G define a altura, teclas numéricas definem a duração
+    (1=semibreve … 5=semicolcheia), setas movem, Del apaga, acidentes (#/b) e pausas.
+  - 4c — Entrada por mouse: clicar na pauta insere nota (y→altura via inverso de `note_y`,
+    x→posição), com snap. (Depende de hit-testing em posições vazias.)
+- **Fatia 5 — Undo/Redo (Command Pattern):** agora com operações ricas pra desfazer; base do
+  "Git de partitura" (Fase 4 do roadmap de produto).
+- **Fatia 6 — Multi-pauta + Mixer funcional:** Grand Staff completo (2 pautas) e mixer por pauta.
+- **Fatia 7 — Tauri:** empacotamento/distribuição.
+- **Fatia 2c (quando quiser):** SoundFont para som de piano real no lugar da síntese senoidal.
