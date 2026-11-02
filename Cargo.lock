@@ -17,6 +17,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "klav-engine"
+version = "0.1.0"
+dependencies = [
+ "klav-core",
+]
+
+[[package]]
 name = "klav-io"
 version = "0.1.0"
 dependencies = [
