@@ -1,0 +1,10 @@
+[package]
+name = "klav-engine"
+description = "klav playback engine: converte um Score em eventos MIDI temporizados"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+klav-core = { path = "../klav-core" }
