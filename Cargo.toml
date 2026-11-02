@@ -4,6 +4,7 @@ members = [
     "crates/klav-core",
     "crates/klav-io",
     "crates/klav-engine",
+    "crates/klav-layout",
 ]
 
 [workspace.package]
