@@ -23,7 +23,7 @@ O núcleo é **headless** (não depende da UI) e dividido em crates:
 | [`klav-app`](crates/klav-app) | App Dioxus: render SVG, abas/explorer, playback (cursor + teclado + áudio) e edição. |
 
 Decisões de arquitetura e o plano de fatias estão em [`docs/arquitetura.md`](docs/arquitetura.md);
-a visão de produto em [`docs/klav_roadmap.md`](docs/klav_roadmap.md).
+a visão de produto em [`docs/klav-roadmap.md`](docs/klav-roadmap.md).
 
 ## Funcionalidades atuais
 
