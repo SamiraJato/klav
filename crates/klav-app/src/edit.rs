@@ -147,12 +147,11 @@ pub fn add_measure(score: &mut Score) -> u32 {
     index
 }
 
-/// Adiciona uma semínima de altura padrão (C4) na próxima posição livre da voz 0 do
-/// último compasso. Se não couber, cria um compasso novo e tenta nele. Devolve o `NoteId`
-/// criado, ou `None` se nem num compasso vazio a nota couber (fórmula muito curta).
-pub fn add_default_note(score: &mut Score) -> Option<u64> {
-    let duration = Duration::new(DurationBase::Quarter, 0);
-    let frac = duration.as_fraction();
+/// Acha a próxima posição livre para uma semínima na voz 0 do último compasso, criando um
+/// compasso se não couber no atual. Devolve `(mi, vi, start)`, ou `None` se nem num compasso
+/// vazio a semínima couber (fórmula muito curta).
+fn free_quarter_slot(score: &mut Score) -> Option<(usize, usize, Fraction)> {
+    let frac = Duration::new(DurationBase::Quarter, 0).as_fraction();
 
     if score.measures.is_empty() {
         add_measure(score);
@@ -170,29 +169,51 @@ pub fn add_default_note(score: &mut Score) -> Option<u64> {
             .unwrap_or(Fraction::ZERO);
 
         if next_start + frac <= measure_dur {
-            let nid = next_note_id(score);
-            let eid = next_element_id(score);
-            score.measures[mi].voices[vi].elements.push(ChordOrRest {
-                id: ElementId(eid),
-                start: next_start,
-                duration,
-                is_rest: false,
-                notes: vec![Note {
-                    id: NoteId(nid),
-                    pitch: Pitch::new(DEFAULT_STEP, DEFAULT_OCTAVE, None),
-                    velocity: 80,
-                    tie_to: None,
-                }],
-                tuplet: None,
-            });
-            return Some(nid);
+            return Some((mi, vi, next_start));
         }
-
         if attempt == 0 {
             add_measure(score);
         }
     }
     None
+}
+
+/// Adiciona uma semínima de altura padrão (C4) na próxima posição livre da voz 0 do
+/// último compasso (criando compasso se preciso). Devolve o `NoteId` criado, ou `None`.
+pub fn add_default_note(score: &mut Score) -> Option<u64> {
+    let (mi, vi, start) = free_quarter_slot(score)?;
+    let nid = next_note_id(score);
+    let eid = next_element_id(score);
+    score.measures[mi].voices[vi].elements.push(ChordOrRest {
+        id: ElementId(eid),
+        start,
+        duration: Duration::new(DurationBase::Quarter, 0),
+        is_rest: false,
+        notes: vec![Note {
+            id: NoteId(nid),
+            pitch: Pitch::new(DEFAULT_STEP, DEFAULT_OCTAVE, None),
+            velocity: 80,
+            tie_to: None,
+        }],
+        tuplet: None,
+    });
+    Some(nid)
+}
+
+/// Adiciona uma pausa de semínima na próxima posição livre (como [`add_default_note`], mas
+/// `is_rest`). Devolve o `ElementId` criado, ou `None` se não couber.
+pub fn add_default_rest(score: &mut Score) -> Option<u64> {
+    let (mi, vi, start) = free_quarter_slot(score)?;
+    let eid = next_element_id(score);
+    score.measures[mi].voices[vi].elements.push(ChordOrRest {
+        id: ElementId(eid),
+        start,
+        duration: Duration::new(DurationBase::Quarter, 0),
+        is_rest: true,
+        notes: vec![],
+        tuplet: None,
+    });
+    Some(eid)
 }
 
 /// Remove a nota `id` do documento. Primeiro zera qualquer `tie_to` que aponte para ela
@@ -261,6 +282,30 @@ pub fn add_note_active(
                     t.selected = Some(nid);
                 }
                 status.set(format!("nota {nid} adicionada"));
+            }
+            Err(e) => status.set(format!("edição inválida: {e:?}")),
+        },
+        None => status.set("sem espaço no compasso — use “+ compasso”".into()),
+    }
+}
+
+/// Adiciona uma pausa de semínima à aba ativa (não altera a seleção).
+pub fn add_rest_active(
+    mut tabs: Signal<Vec<Tab>>,
+    active: Signal<usize>,
+    mut status: Signal<String>,
+) {
+    let a = *active.peek();
+    let Some(mut score) = tabs.read().get(a).map(|t| t.score.clone()) else {
+        return;
+    };
+    match add_default_rest(&mut score) {
+        Some(_) => match score.validate() {
+            Ok(()) => {
+                if let Some(t) = tabs.write().get_mut(a) {
+                    t.score = score;
+                }
+                status.set("pausa adicionada".into());
             }
             Err(e) => status.set(format!("edição inválida: {e:?}")),
         },
@@ -642,6 +687,19 @@ mod tests {
         // a nota nova fica no novo compasso, no início
         assert_eq!(s.measures[1].voices[0].elements[0].notes[0].id.value(), nid);
         assert_eq!(s.measures[1].voices[0].elements[0].start, Fraction::ZERO);
+    }
+
+    #[test]
+    fn add_rest_coloca_pausa_na_posicao_livre() {
+        let mut s = n_quarters(1); // uma semínima em 0; pausa entra em 1/4
+        let eid = add_default_rest(&mut s).unwrap();
+        let el = &s.measures[0].voices[0].elements;
+        assert_eq!(el.len(), 2);
+        assert!(el[1].is_rest);
+        assert!(el[1].notes.is_empty());
+        assert_eq!(el[1].id.value(), eid);
+        assert_eq!(el[1].start, Fraction::new(1, 4));
+        assert_eq!(s.validate(), Ok(()));
     }
 
     #[test]

@@ -21,8 +21,9 @@ use dioxus::prelude::*;
 
 use document::{close_tab, open_file, Tab};
 use edit::{
-    add_measure_active, add_note_active, delete_selected_active, duration_base_from_key,
-    navigate_active, set_accidental_active, set_duration_active, set_step_active, transpose_active,
+    add_measure_active, add_note_active, add_rest_active, delete_selected_active,
+    duration_base_from_key, navigate_active, set_accidental_active, set_duration_active,
+    set_step_active, transpose_active,
 };
 use keyboard::{keyboard_geometry, BLACK_W, WHITE_W};
 use project::scan_klav;
@@ -231,6 +232,7 @@ fn App() -> Element {
     let down = move |_| transpose_active(tabs, active, false);
 
     let add_note = move |_| add_note_active(tabs, active, status);
+    let add_rest = move |_| add_rest_active(tabs, active, status);
     let add_meas = move |_| add_measure_active(tabs, active, status);
     let delete = move |_| delete_selected_active(tabs, active, status);
 
@@ -256,6 +258,7 @@ fn App() -> Element {
                 "#" | "+" => set_accidental_active(tabs, active, status, Some(Accidental::Sharp)),
                 "-" => set_accidental_active(tabs, active, status, Some(Accidental::Flat)),
                 "n" => set_accidental_active(tabs, active, status, None),
+                "0" | "r" => add_rest_active(tabs, active, status),
                 _ => {}
             }
         }
@@ -330,6 +333,12 @@ fn App() -> Element {
                     title: "Adiciona nota · teclado: A–G altura, 1–5 duração, ←/→ navega",
                     onclick: add_note,
                     "＋ nota"
+                }
+                button {
+                    class: "btn",
+                    title: "Adiciona pausa de semínima (tecla 0 ou R)",
+                    onclick: add_rest,
+                    "＋ pausa"
                 }
                 button { class: "btn", title: "Adiciona um compasso", onclick: add_meas, "＋ compasso" }
                 button {
