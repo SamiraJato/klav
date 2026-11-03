@@ -50,6 +50,14 @@ cargo run -p klav-app
 cargo test
 ```
 
+Antes de commitar, rode as validações (formatação, clippy com warnings como erro e testes)
+de uma vez — silencioso no sucesso, detalha só o que falhar:
+
+```powershell
+pwsh scripts/check.ps1          # tudo
+pwsh scripts/check.ps1 clippy   # só uma etapa: fmt | clippy | test
+```
+
 ## Roadmap (resumo)
 
 Próximo foco: **editor de conteúdo** (adicionar/remover notas e compassos, entrada por teclado),
