@@ -2,11 +2,13 @@
 //!
 //! A lógica musical é pura (testável sem UI); só `transpose_active` toca nos `Signal`.
 
+use std::collections::HashMap;
+
 use dioxus::prelude::*;
 
 use klav_core::{
-    ChordOrRest, Duration, DurationBase, ElementId, Fraction, Measure, Note, NoteId, Pitch, Score,
-    TimeSignature, Voice,
+    Accidental, ChordOrRest, Duration, DurationBase, ElementId, Fraction, Measure, Note, NoteId,
+    Pitch, Score, TimeSignature, Voice,
 };
 
 use crate::document::Tab;
@@ -318,6 +320,211 @@ pub fn delete_selected_active(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Entrada por teclado (Fatia 4b): altura (A–G), acidente (#/b), duração (1–5)
+// e navegação entre notas. Funções puras + wrappers que validam antes de efetivar.
+// ---------------------------------------------------------------------------
+
+/// Aplica `f` à nota de id `id` (a primeira que casar). Devolve `true` se achou.
+fn mutate_note(score: &mut Score, id: u64, f: impl FnOnce(&mut Note)) -> bool {
+    for m in score.measures.iter_mut() {
+        for v in m.voices.iter_mut() {
+            for cr in v.elements.iter_mut() {
+                if let Some(n) = cr.notes.iter_mut().find(|n| n.id.value() == id) {
+                    f(n);
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Define o nome (A–G) da nota, preservando a oitava e zerando o acidente.
+pub fn set_step(score: &mut Score, id: u64, step: char) -> bool {
+    mutate_note(score, id, |n| {
+        n.pitch = Pitch::new(step.to_ascii_uppercase(), n.pitch.octave, None);
+    })
+}
+
+/// Define (ou remove, com `None`) o acidente da nota.
+pub fn set_accidental(score: &mut Score, id: u64, acc: Option<Accidental>) -> bool {
+    mutate_note(score, id, |n| n.pitch.accidental = acc)
+}
+
+/// Recalcula os `start` de uma voz como durações contíguas (reflow), aplicando o fator
+/// de cada quiáltera quando houver.
+fn reflow(elements: &mut [ChordOrRest], ratios: &HashMap<u64, Fraction>) {
+    let mut cursor = Fraction::ZERO;
+    for cr in elements.iter_mut() {
+        cr.start = cursor;
+        let mut d = cr.duration.as_fraction();
+        if let Some(tid) = cr.tuplet {
+            if let Some(r) = ratios.get(&tid.value()) {
+                d = d * *r;
+            }
+        }
+        cursor = cursor + d;
+    }
+}
+
+/// Troca a duração (base, sem pontos) do elemento que contém a nota `id` e refaz o
+/// encadeamento (reflow) da voz, mantendo-a contígua. Devolve `true` se achou a nota.
+///
+/// Não checa se cabe no compasso: quem chama valida o Score e desfaz se estourar.
+pub fn set_duration(score: &mut Score, id: u64, base: DurationBase) -> bool {
+    for m in score.measures.iter_mut() {
+        let ratios: HashMap<u64, Fraction> = m
+            .tuplets
+            .iter()
+            .filter(|t| t.actual != 0 && t.normal != 0)
+            .map(|t| {
+                (
+                    t.id.value(),
+                    Fraction::new(t.normal as i64, t.actual as i64),
+                )
+            })
+            .collect();
+        for v in m.voices.iter_mut() {
+            if let Some(ei) = v
+                .elements
+                .iter()
+                .position(|cr| cr.notes.iter().any(|n| n.id.value() == id))
+            {
+                v.elements[ei].duration = Duration::new(base, 0);
+                reflow(&mut v.elements, &ratios);
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Base de duração a partir da tecla numérica (1=semibreve … 5=semicolcheia).
+pub fn duration_base_from_key(d: char) -> Option<DurationBase> {
+    Some(match d {
+        '1' => DurationBase::Whole,
+        '2' => DurationBase::Half,
+        '3' => DurationBase::Quarter,
+        '4' => DurationBase::Eighth,
+        '5' => DurationBase::Sixteenth,
+        _ => return None,
+    })
+}
+
+/// Todos os `NoteId` do documento em ordem (compasso → voz → elemento → nota).
+pub fn note_ids_in_order(score: &Score) -> Vec<u64> {
+    let mut out = Vec::new();
+    for m in &score.measures {
+        for v in &m.voices {
+            for cr in &v.elements {
+                for n in &cr.notes {
+                    out.push(n.id.value());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Vizinho de `current` na ordem do documento. Sem seleção, pega a primeira (ou última)
+/// nota. Nas pontas, permanece na nota atual. `None` se não houver notas.
+pub fn neighbor_note(score: &Score, current: Option<u64>, forward: bool) -> Option<u64> {
+    let ids = note_ids_in_order(score);
+    if ids.is_empty() {
+        return None;
+    }
+    match current.and_then(|c| ids.iter().position(|&x| x == c)) {
+        Some(i) => {
+            if forward {
+                Some(ids.get(i + 1).copied().unwrap_or(ids[i]))
+            } else if i > 0 {
+                Some(ids[i - 1])
+            } else {
+                Some(ids[i])
+            }
+        }
+        None => Some(if forward {
+            ids[0]
+        } else {
+            *ids.last().unwrap()
+        }),
+    }
+}
+
+/// Move a seleção da aba ativa para a nota anterior/seguinte.
+pub fn navigate_active(mut tabs: Signal<Vec<Tab>>, active: Signal<usize>, forward: bool) {
+    let a = *active.peek();
+    let mut w = tabs.write();
+    if let Some(t) = w.get_mut(a) {
+        if let Some(next) = neighbor_note(&t.score, t.selected, forward) {
+            t.selected = Some(next);
+        }
+    }
+}
+
+/// Aplica `f` à nota selecionada da aba ativa, validando o Score antes de efetivar.
+fn edit_selected(
+    mut tabs: Signal<Vec<Tab>>,
+    active: Signal<usize>,
+    mut status: Signal<String>,
+    f: impl FnOnce(&mut Score, u64),
+) {
+    let a = *active.peek();
+    let Some((mut score, sel)) = tabs.read().get(a).map(|t| (t.score.clone(), t.selected)) else {
+        return;
+    };
+    let Some(id) = sel else {
+        status.set("selecione uma nota primeiro".into());
+        return;
+    };
+    f(&mut score, id);
+    match score.validate() {
+        Ok(()) => {
+            if let Some(t) = tabs.write().get_mut(a) {
+                t.score = score;
+            }
+        }
+        Err(e) => status.set(format!("edição inválida: {e:?}")),
+    }
+}
+
+/// Define a altura (A–G) da nota selecionada.
+pub fn set_step_active(
+    tabs: Signal<Vec<Tab>>,
+    active: Signal<usize>,
+    status: Signal<String>,
+    step: char,
+) {
+    edit_selected(tabs, active, status, |s, id| {
+        set_step(s, id, step);
+    });
+}
+
+/// Define o acidente da nota selecionada.
+pub fn set_accidental_active(
+    tabs: Signal<Vec<Tab>>,
+    active: Signal<usize>,
+    status: Signal<String>,
+    acc: Option<Accidental>,
+) {
+    edit_selected(tabs, active, status, |s, id| {
+        set_accidental(s, id, acc);
+    });
+}
+
+/// Define a duração da nota selecionada (com reflow da voz).
+pub fn set_duration_active(
+    tabs: Signal<Vec<Tab>>,
+    active: Signal<usize>,
+    status: Signal<String>,
+    base: DurationBase,
+) {
+    edit_selected(tabs, active, status, |s, id| {
+        set_duration(s, id, base);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,9 +703,85 @@ mod tests {
         s.measures[0].voices[0].elements[0].notes[0].tie_to = Some(NoteId(2));
         assert_eq!(s.validate(), Ok(())); // tie válido (mesma altura, imediato)
         assert!(delete_note(&mut s, 2)); // apaga o alvo do tie
-                                         // a nota 1 não pode ficar com tie pendurado:
         let n1 = &s.measures[0].voices[0].elements[0].notes[0];
-        assert_eq!(n1.tie_to, None);
+        assert_eq!(n1.tie_to, None); // a nota 1 não pode ficar com tie pendurado
         assert_eq!(s.validate(), Ok(()));
+    }
+
+    // --- Entrada por teclado / navegação ---
+
+    fn pitch_of(s: &Score, id: u64) -> Pitch {
+        s.measures
+            .iter()
+            .flat_map(|m| &m.voices)
+            .flat_map(|v| &v.elements)
+            .flat_map(|cr| &cr.notes)
+            .find(|n| n.id.value() == id)
+            .unwrap()
+            .pitch
+    }
+
+    #[test]
+    fn set_step_troca_nome_e_zera_acidente() {
+        let mut s = n_quarters(1);
+        set_accidental(&mut s, 1, Some(Accidental::Sharp));
+        assert!(set_step(&mut s, 1, 'f'));
+        let p = pitch_of(&s, 1);
+        assert_eq!((p.step, p.octave, p.accidental), ('F', 4, None));
+    }
+
+    #[test]
+    fn set_accidental_define_bemol() {
+        let mut s = n_quarters(1);
+        assert!(set_accidental(&mut s, 1, Some(Accidental::Flat)));
+        assert_eq!(pitch_of(&s, 1).accidental, Some(Accidental::Flat));
+    }
+
+    #[test]
+    fn set_duration_refaz_os_starts_da_voz() {
+        // duas semínimas (starts 0, 1/4); troca a 1ª para mínima -> starts 0, 1/2.
+        let mut s = n_quarters(2);
+        assert!(set_duration(&mut s, 1, DurationBase::Half));
+        let el = &s.measures[0].voices[0].elements;
+        assert_eq!(el[0].start, Fraction::ZERO);
+        assert_eq!(el[1].start, Fraction::new(1, 2));
+        assert_eq!(s.validate(), Ok(()));
+    }
+
+    #[test]
+    fn set_duration_que_estoura_e_pego_pela_validacao() {
+        // 4 semínimas; alongar a última para semibreve estoura o compasso 4/4.
+        let mut s = n_quarters(4);
+        assert!(set_duration(&mut s, 4, DurationBase::Whole));
+        assert!(matches!(
+            s.validate(),
+            Err(klav_core::ValidationError::VoiceExceedsMeasure { .. })
+        ));
+    }
+
+    #[test]
+    fn duration_base_from_key_mapeia_1_a_5() {
+        assert_eq!(duration_base_from_key('1'), Some(DurationBase::Whole));
+        assert_eq!(duration_base_from_key('3'), Some(DurationBase::Quarter));
+        assert_eq!(duration_base_from_key('5'), Some(DurationBase::Sixteenth));
+        assert_eq!(duration_base_from_key('9'), None);
+    }
+
+    #[test]
+    fn navegacao_anda_e_para_nas_pontas() {
+        let s = n_quarters(3); // notas 1,2,3
+        assert_eq!(neighbor_note(&s, None, true), Some(1));
+        assert_eq!(neighbor_note(&s, None, false), Some(3));
+        assert_eq!(neighbor_note(&s, Some(1), true), Some(2));
+        assert_eq!(neighbor_note(&s, Some(2), false), Some(1));
+        assert_eq!(neighbor_note(&s, Some(3), true), Some(3)); // última: permanece
+        assert_eq!(neighbor_note(&s, Some(1), false), Some(1)); // primeira: permanece
+    }
+
+    #[test]
+    fn navegacao_em_score_sem_notas_e_none() {
+        let mut s = n_quarters(0);
+        s.measures.clear();
+        assert_eq!(neighbor_note(&s, None, true), None);
     }
 }

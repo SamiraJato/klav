@@ -20,12 +20,16 @@ use dioxus::desktop::{use_window, Config, LogicalSize, WindowBuilder};
 use dioxus::prelude::*;
 
 use document::{close_tab, open_file, Tab};
-use edit::{add_measure_active, add_note_active, delete_selected_active, transpose_active};
+use edit::{
+    add_measure_active, add_note_active, delete_selected_active, duration_base_from_key,
+    navigate_active, set_accidental_active, set_duration_active, set_step_active, transpose_active,
+};
 use keyboard::{keyboard_geometry, BLACK_W, WHITE_W};
 use project::scan_klav;
 use synth::{SynthCmd, SynthRuntime};
 use theme::build_css;
 
+use klav_core::Accidental;
 use klav_engine::{key_intervals, render_events, total_duration_whole, whole_to_seconds};
 use klav_layout::{layout_single_staff, StaffLayout, MAX_SYSTEM_WIDTH};
 
@@ -230,6 +234,34 @@ fn App() -> Element {
     let add_meas = move |_| add_measure_active(tabs, active, status);
     let delete = move |_| delete_selected_active(tabs, active, status);
 
+    // Entrada por teclado: setas navegam/transpõem, A–G altura, 1–5 duração,
+    // #/+ e - acidentes, n natural, Del/Backspace apaga.
+    let on_key = move |evt: KeyboardEvent| match evt.key() {
+        Key::ArrowRight => navigate_active(tabs, active, true),
+        Key::ArrowLeft => navigate_active(tabs, active, false),
+        Key::ArrowUp => transpose_active(tabs, active, true),
+        Key::ArrowDown => transpose_active(tabs, active, false),
+        Key::Delete | Key::Backspace => delete_selected_active(tabs, active, status),
+        Key::Character(s) => {
+            let k = s.to_lowercase();
+            match k.as_str() {
+                "a" | "b" | "c" | "d" | "e" | "f" | "g" => {
+                    set_step_active(tabs, active, status, k.chars().next().unwrap())
+                }
+                "1" | "2" | "3" | "4" | "5" => {
+                    if let Some(base) = duration_base_from_key(k.chars().next().unwrap()) {
+                        set_duration_active(tabs, active, status, base);
+                    }
+                }
+                "#" | "+" => set_accidental_active(tabs, active, status, Some(Accidental::Sharp)),
+                "-" => set_accidental_active(tabs, active, status, Some(Accidental::Flat)),
+                "n" => set_accidental_active(tabs, active, status, None),
+                _ => {}
+            }
+        }
+        _ => {}
+    };
+
     let play_pause = move |_| {
         let is_playing = *playing.peek();
         if !is_playing && *position.peek() >= *total_secs.peek() {
@@ -286,19 +318,42 @@ fn App() -> Element {
 
     rsx! {
         style { {css} }
-        div { class: "app",
+        div { class: "app", tabindex: "0", autofocus: true, onkeydown: on_key,
             // Barra superior
             div { class: "titlebar",
                 span { class: "brand", "klav" }
                 button { class: "btn", onclick: open_folder, "Abrir pasta" }
                 button { class: "btn", onclick: save, "Salvar" }
                 span { class: "divider" }
-                button { class: "btn", onclick: add_note, "＋ nota" }
-                button { class: "btn", onclick: add_meas, "＋ compasso" }
-                button { class: "btn", disabled: sel.is_none(), onclick: delete, "🗑 Apagar" }
+                button {
+                    class: "btn",
+                    title: "Adiciona nota · teclado: A–G altura, 1–5 duração, ←/→ navega",
+                    onclick: add_note,
+                    "＋ nota"
+                }
+                button { class: "btn", title: "Adiciona um compasso", onclick: add_meas, "＋ compasso" }
+                button {
+                    class: "btn",
+                    title: "Apaga a nota selecionada (Del)",
+                    disabled: sel.is_none(),
+                    onclick: delete,
+                    "🗑 Apagar"
+                }
                 span { class: "divider" }
-                button { class: "btn", disabled: sel.is_none(), onclick: up, "♪ ↑" }
-                button { class: "btn", disabled: sel.is_none(), onclick: down, "♪ ↓" }
+                button {
+                    class: "btn",
+                    title: "Transpõe a nota um grau acima (↑); acidentes: #/+ e -",
+                    disabled: sel.is_none(),
+                    onclick: up,
+                    "♪ ↑"
+                }
+                button {
+                    class: "btn",
+                    title: "Transpõe a nota um grau abaixo (↓)",
+                    disabled: sel.is_none(),
+                    onclick: down,
+                    "♪ ↓"
+                }
                 span { class: "divider" }
                 button { class: "btn", onclick: play_pause, if playing() { "⏸ Pausar" } else { "▶ Tocar" } }
                 button { class: "btn", onclick: stop, "⏹ Parar" }
