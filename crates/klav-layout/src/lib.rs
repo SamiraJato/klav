@@ -5,11 +5,11 @@
 //! SVG, Canvas ou pixels; o backend de render (no `klav-app`) consome esta cena e desenha.
 //!
 //! Este corte inclui: posição vertical por pitch/clave, glifos SMuFL, espaçamento horizontal
-//! proporcional à duração, **barras de compasso**, **quebra em sistemas** (linhas) quando a
-//! largura passa de [`MAX_SYSTEM_WIDTH`], e um **respiro** ([`MEASURE_PAD`]) nas duas pontas de
-//! cada compasso para o conteúdo não ficar colado nas barras.
-//! **Ainda não:** hastes/bandeirolas, linhas suplementares desenhadas, acidentes posicionados,
-//! quebra em páginas e Grand Staff (usa a pauta de cima por ora).
+//! proporcional à duração, **hastes e bandeirolas** (que distinguem a duração), **barras de
+//! compasso**, **quebra em sistemas** (linhas) quando a largura passa de [`MAX_SYSTEM_WIDTH`], e
+//! um **respiro** ([`MEASURE_PAD`]) nas duas pontas de cada compasso.
+//! **Ainda não:** vigas (beams) ligando colcheias, linhas suplementares desenhadas, acidentes
+//! posicionados, quebra em páginas e Grand Staff (usa a pauta de cima por ora).
 
 pub mod glyph;
 pub mod vertical;
@@ -32,6 +32,10 @@ pub const SPACE_PER_WHOLE: Sp = 24.0;
 pub const MEASURE_PAD: Sp = 2.5;
 /// Número de linhas da pauta.
 pub const STAFF_LINE_COUNT: u32 = 5;
+/// Comprimento padrão da haste (sp) — ~uma oitava, convenção de gravação.
+pub const STEM_LEN: Sp = 3.5;
+/// Largura aproximada da cabeça de nota (sp), usada para ancorar a haste à direita.
+pub const NOTEHEAD_W: Sp = 1.18;
 /// Espaço vertical (sp) entre a última linha de um sistema e a primeira do seguinte.
 pub const SYSTEM_GAP: Sp = 8.0;
 /// Largura máxima (sp) de um sistema antes de quebrar para a próxima linha.
@@ -72,6 +76,14 @@ pub struct Barline {
     pub y_top: Sp,
 }
 
+/// Haste de uma nota/acorde: segmento vertical em `x`, de `y_top` a `y_bottom`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Stem {
+    pub x: Sp,
+    pub y_top: Sp,
+    pub y_bottom: Sp,
+}
+
 /// Uma linha de pauta (sistema): uma fileira horizontal de compassos.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct System {
@@ -108,6 +120,7 @@ pub struct StaffLayout {
     pub measures: Vec<MeasureBox>,
     pub glyphs: Vec<PlacedGlyph>,
     pub barlines: Vec<Barline>,
+    pub stems: Vec<Stem>,
 }
 
 impl StaffLayout {
@@ -165,6 +178,7 @@ pub fn layout_single_staff(score: &Score, max_width: Sp) -> StaffLayout {
 
     let mut glyphs: Vec<PlacedGlyph> = Vec::new();
     let mut barlines: Vec<Barline> = Vec::new();
+    let mut stems: Vec<Stem> = Vec::new();
     let mut systems: Vec<System> = Vec::new();
     let mut measures: Vec<MeasureBox> = Vec::new();
 
@@ -212,18 +226,54 @@ pub fn layout_single_staff(score: &Score, max_width: Sp) -> StaffLayout {
                     continue;
                 }
 
+                let mut ys: Vec<Sp> = Vec::new();
                 for n in &cr.notes {
                     if let Some(y) = vertical::note_y(&n.pitch, clef) {
+                        let yy = y + y_top(sys_index);
                         glyphs.push(PlacedGlyph {
-                            pos: Point {
-                                x,
-                                y: y + y_top(sys_index),
-                            },
+                            pos: Point { x, y: yy },
                             glyph: Glyph::notehead_for(cr.duration.base),
                             note_id: Some(n.id.value()),
                         });
+                        ys.push(yy);
                     }
                     // pitch inválido: sem glifo (não há como posicionar)
+                }
+
+                // Haste + bandeirola (indicam a duração). Semibreve não tem haste.
+                if !ys.is_empty() && Glyph::has_stem(cr.duration.base) {
+                    let min_y = ys.iter().cloned().fold(Sp::INFINITY, Sp::min);
+                    let max_y = ys.iter().cloned().fold(Sp::NEG_INFINITY, Sp::max);
+                    let mid = 2.0 + y_top(sys_index); // linha do meio
+                                                      // Direção pela nota mais distante do meio: abaixo/na linha => haste p/ cima.
+                    let farthest = ys
+                        .iter()
+                        .cloned()
+                        .max_by(|a, b| (a - mid).abs().total_cmp(&(b - mid).abs()))
+                        .unwrap();
+                    let up = farthest >= mid;
+
+                    let (stem_x, y_t, y_b, flag_y) = if up {
+                        (x + NOTEHEAD_W, min_y - STEM_LEN, max_y, min_y - STEM_LEN)
+                    } else {
+                        (x, min_y, max_y + STEM_LEN, max_y + STEM_LEN)
+                    };
+                    stems.push(Stem {
+                        x: stem_x,
+                        y_top: y_t,
+                        y_bottom: y_b,
+                    });
+
+                    if let Some(flag) = Glyph::flag_for(cr.duration.base, up) {
+                        glyphs.push(PlacedGlyph {
+                            pos: Point {
+                                x: stem_x,
+                                y: flag_y,
+                            },
+                            glyph: flag,
+                            note_id: None,
+                        });
+                    }
                 }
             }
         }
@@ -269,6 +319,7 @@ pub fn layout_single_staff(score: &Score, max_width: Sp) -> StaffLayout {
         measures,
         glyphs,
         barlines,
+        stems,
     }
 }
 
@@ -419,6 +470,94 @@ mod tests {
         let base = MARGIN + CLEF_WIDTH + MEASURE_PAD;
         assert_eq!(heads[0].pos.x, base);
         assert_eq!(heads[1].pos.x, base + SPACE_PER_WHOLE * 0.25);
+    }
+
+    #[test]
+    fn semibreve_nao_tem_haste_mas_seminima_tem() {
+        let whole = score_1m(
+            StaffType::Single(Clef::Treble),
+            vec![Voice {
+                voice_id: 0,
+                elements: vec![elem(
+                    1,
+                    Fraction::ZERO,
+                    DurationBase::Whole,
+                    vec![note(10, 'C', 4)],
+                )],
+            }],
+        );
+        assert!(layout_single_staff(&whole, MAX_SYSTEM_WIDTH)
+            .stems
+            .is_empty());
+
+        let quarter = score_1m(
+            StaffType::Single(Clef::Treble),
+            vec![Voice {
+                voice_id: 0,
+                elements: vec![elem(
+                    1,
+                    Fraction::ZERO,
+                    DurationBase::Quarter,
+                    vec![note(10, 'C', 4)],
+                )],
+            }],
+        );
+        let l = layout_single_staff(&quarter, MAX_SYSTEM_WIDTH);
+        assert_eq!(l.stems.len(), 1);
+        // C4 (abaixo do meio) => haste para cima: fica à direita e sobe acima da cabeça.
+        let s = l.stems[0];
+        assert!(s.y_top < s.y_bottom);
+        assert!(l
+            .glyphs
+            .iter()
+            .all(|g| !matches!(g.glyph, Glyph::Flag8thUp | Glyph::Flag8thDown)));
+        // semínima não tem bandeirola
+    }
+
+    #[test]
+    fn colcheia_ganha_bandeirola() {
+        let s = score_1m(
+            StaffType::Single(Clef::Treble),
+            vec![Voice {
+                voice_id: 0,
+                elements: vec![elem(
+                    1,
+                    Fraction::ZERO,
+                    DurationBase::Eighth,
+                    vec![note(10, 'C', 4)],
+                )],
+            }],
+        );
+        let l = layout_single_staff(&s, MAX_SYSTEM_WIDTH);
+        assert_eq!(l.stems.len(), 1);
+        assert!(l.glyphs.iter().any(|g| g.glyph == Glyph::Flag8thUp));
+    }
+
+    #[test]
+    fn direcao_da_haste_segue_a_altura() {
+        // Nota aguda (acima do meio) => haste para baixo (ancorada à esquerda, x da cabeça).
+        let aguda = score_1m(
+            StaffType::Single(Clef::Treble),
+            vec![Voice {
+                voice_id: 0,
+                elements: vec![elem(
+                    1,
+                    Fraction::ZERO,
+                    DurationBase::Quarter,
+                    vec![note(10, 'G', 5)],
+                )],
+            }],
+        );
+        let l = layout_single_staff(&aguda, MAX_SYSTEM_WIDTH);
+        let head_x = l
+            .glyphs
+            .iter()
+            .find(|g| g.note_id == Some(10))
+            .unwrap()
+            .pos
+            .x;
+        // haste para baixo fica no x da cabeça; para cima ficaria em head_x + NOTEHEAD_W.
+        assert_eq!(l.stems[0].x, head_x);
     }
 
     #[test]

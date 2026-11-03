@@ -14,6 +14,14 @@ pub enum Glyph {
     NoteheadWhole,
     NoteheadHalf,
     NoteheadBlack,
+    Flag8thUp,
+    Flag8thDown,
+    Flag16thUp,
+    Flag16thDown,
+    Flag32ndUp,
+    Flag32ndDown,
+    Flag64thUp,
+    Flag64thDown,
     RestWhole,
     RestHalf,
     RestQuarter,
@@ -37,6 +45,14 @@ impl Glyph {
             Glyph::NoteheadWhole => 0xE0A2,
             Glyph::NoteheadHalf => 0xE0A3,
             Glyph::NoteheadBlack => 0xE0A4,
+            Glyph::Flag8thUp => 0xE240,
+            Glyph::Flag8thDown => 0xE241,
+            Glyph::Flag16thUp => 0xE242,
+            Glyph::Flag16thDown => 0xE243,
+            Glyph::Flag32ndUp => 0xE244,
+            Glyph::Flag32ndDown => 0xE245,
+            Glyph::Flag64thUp => 0xE246,
+            Glyph::Flag64thDown => 0xE247,
             Glyph::RestWhole => 0xE4E3,
             Glyph::RestHalf => 0xE4E4,
             Glyph::RestQuarter => 0xE4E5,
@@ -61,6 +77,27 @@ impl Glyph {
             DurationBase::Half => Glyph::NoteheadHalf,
             _ => Glyph::NoteheadBlack,
         }
+    }
+
+    /// `true` se a duração leva haste (tudo menos a semibreve).
+    pub fn has_stem(base: DurationBase) -> bool {
+        base != DurationBase::Whole
+    }
+
+    /// Bandeirola para a duração e direção da haste (`up`), ou `None` se não tem bandeirola
+    /// (semibreve, mínima, semínima).
+    pub fn flag_for(base: DurationBase, up: bool) -> Option<Glyph> {
+        Some(match (base, up) {
+            (DurationBase::Eighth, true) => Glyph::Flag8thUp,
+            (DurationBase::Eighth, false) => Glyph::Flag8thDown,
+            (DurationBase::Sixteenth, true) => Glyph::Flag16thUp,
+            (DurationBase::Sixteenth, false) => Glyph::Flag16thDown,
+            (DurationBase::ThirtySecond, true) => Glyph::Flag32ndUp,
+            (DurationBase::ThirtySecond, false) => Glyph::Flag32ndDown,
+            (DurationBase::SixtyFourth, true) => Glyph::Flag64thUp,
+            (DurationBase::SixtyFourth, false) => Glyph::Flag64thDown,
+            _ => return None,
+        })
     }
 
     /// Pausa adequada para a duração.
@@ -108,5 +145,31 @@ mod tests {
     fn pausa_por_duracao() {
         assert_eq!(Glyph::rest_for(DurationBase::Quarter), Glyph::RestQuarter);
         assert_eq!(Glyph::rest_for(DurationBase::Eighth), Glyph::Rest8th);
+    }
+
+    #[test]
+    fn haste_so_nao_na_semibreve() {
+        assert!(!Glyph::has_stem(DurationBase::Whole));
+        assert!(Glyph::has_stem(DurationBase::Half));
+        assert!(Glyph::has_stem(DurationBase::Quarter));
+        assert!(Glyph::has_stem(DurationBase::Eighth));
+    }
+
+    #[test]
+    fn bandeirola_so_de_colcheia_pra_baixo() {
+        assert_eq!(Glyph::flag_for(DurationBase::Quarter, true), None);
+        assert_eq!(Glyph::flag_for(DurationBase::Half, false), None);
+        assert_eq!(
+            Glyph::flag_for(DurationBase::Eighth, true),
+            Some(Glyph::Flag8thUp)
+        );
+        assert_eq!(
+            Glyph::flag_for(DurationBase::Eighth, false),
+            Some(Glyph::Flag8thDown)
+        );
+        assert_eq!(
+            Glyph::flag_for(DurationBase::Sixteenth, true),
+            Some(Glyph::Flag16thUp)
+        );
     }
 }

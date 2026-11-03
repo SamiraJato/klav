@@ -449,6 +449,14 @@ fn App() -> Element {
                                         stroke: "#333", stroke_width: "1",
                                     }
                                 }
+                                // Hastes das notas.
+                                for s in lay.stems.iter() {
+                                    line {
+                                        x1: "{px_x(s.x)}", y1: "{px_y(s.y_top)}",
+                                        x2: "{px_x(s.x)}", y2: "{px_y(s.y_bottom)}",
+                                        stroke: "#111", stroke_width: "1.3",
+                                    }
+                                }
                                 for g in lay.glyphs.iter() {
                                     {
                                         let ch = g.glyph.codepoint();
