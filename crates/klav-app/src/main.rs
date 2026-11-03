@@ -497,6 +497,14 @@ fn App() -> Element {
                                         stroke: "#333", stroke_width: "1",
                                     }
                                 }
+                                // Linhas suplementares (notas fora da pauta).
+                                for lg in lay.ledgers.iter() {
+                                    line {
+                                        x1: "{px_x(lg.x1)}", y1: "{px_y(lg.y)}",
+                                        x2: "{px_x(lg.x2)}", y2: "{px_y(lg.y)}",
+                                        stroke: "#333", stroke_width: "1",
+                                    }
+                                }
                                 // Hastes das notas.
                                 for s in lay.stems.iter() {
                                     line {

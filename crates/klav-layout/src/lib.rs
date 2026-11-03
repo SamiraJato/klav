@@ -8,8 +8,8 @@
 //! proporcional à duração, **hastes e bandeirolas** (que distinguem a duração), **barras de
 //! compasso**, **quebra em sistemas** (linhas) quando a largura passa de [`MAX_SYSTEM_WIDTH`], e
 //! um **respiro** ([`MEASURE_PAD`]) nas duas pontas de cada compasso.
-//! **Ainda não:** vigas (beams) ligando colcheias, linhas suplementares desenhadas, acidentes
-//! posicionados, quebra em páginas e Grand Staff (usa a pauta de cima por ora).
+//! **Ainda não:** vigas (beams) ligando colcheias, acidentes posicionados, quebra em páginas
+//! e Grand Staff (usa a pauta de cima por ora).
 
 pub mod glyph;
 pub mod vertical;
@@ -36,6 +36,8 @@ pub const STAFF_LINE_COUNT: u32 = 5;
 pub const STEM_LEN: Sp = 3.5;
 /// Largura aproximada da cabeça de nota (sp), usada para ancorar a haste à direita.
 pub const NOTEHEAD_W: Sp = 1.18;
+/// Quanto a linha suplementar se estende além da cabeça, de cada lado (sp).
+pub const LEDGER_EXT: Sp = 0.4;
 /// Espaço vertical (sp) entre a última linha de um sistema e a primeira do seguinte.
 pub const SYSTEM_GAP: Sp = 8.0;
 /// Largura máxima (sp) de um sistema antes de quebrar para a próxima linha.
@@ -85,6 +87,15 @@ pub struct Stem {
     pub y_bottom: Sp,
 }
 
+/// Linha suplementar (ledger): segmento horizontal em `y`, de `x1` a `x2`, para notas fora
+/// das 5 linhas da pauta.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LedgerLine {
+    pub x1: Sp,
+    pub x2: Sp,
+    pub y: Sp,
+}
+
 /// Uma linha de pauta (sistema): uma fileira horizontal de compassos.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct System {
@@ -122,6 +133,7 @@ pub struct StaffLayout {
     pub glyphs: Vec<PlacedGlyph>,
     pub barlines: Vec<Barline>,
     pub stems: Vec<Stem>,
+    pub ledgers: Vec<LedgerLine>,
 }
 
 impl StaffLayout {
@@ -152,6 +164,34 @@ pub fn staff_line_y(line_from_top: u32) -> Sp {
     line_from_top as Sp
 }
 
+/// Acrescenta as linhas suplementares para uma cabeça em `y` (relativo à pauta: 0 = linha de
+/// cima, 4 = de baixo), deslocadas pelo `yof` do sistema. Linhas acima (y <= -1) e abaixo
+/// (y >= 5), uma por posição inteira entre a pauta e a nota.
+fn push_ledgers(ledgers: &mut Vec<LedgerLine>, x: Sp, y: Sp, yof: Sp) {
+    let (x1, x2) = (x - LEDGER_EXT, x + NOTEHEAD_W + LEDGER_EXT);
+    if y >= 5.0 {
+        let mut p = 5;
+        while (p as Sp) <= y {
+            ledgers.push(LedgerLine {
+                x1,
+                x2,
+                y: p as Sp + yof,
+            });
+            p += 1;
+        }
+    } else if y <= -1.0 {
+        let mut p = -1;
+        while (p as Sp) >= y {
+            ledgers.push(LedgerLine {
+                x1,
+                x2,
+                y: p as Sp + yof,
+            });
+            p -= 1;
+        }
+    }
+}
+
 fn push_clef(glyphs: &mut Vec<PlacedGlyph>, clef: Clef, y_top: Sp) {
     let (glyph, y) = match clef {
         Clef::Treble => (Glyph::GClef, 3.0),
@@ -180,6 +220,7 @@ pub fn layout_single_staff(score: &Score, max_width: Sp) -> StaffLayout {
     let mut glyphs: Vec<PlacedGlyph> = Vec::new();
     let mut barlines: Vec<Barline> = Vec::new();
     let mut stems: Vec<Stem> = Vec::new();
+    let mut ledgers: Vec<LedgerLine> = Vec::new();
     let mut systems: Vec<System> = Vec::new();
     let mut measures: Vec<MeasureBox> = Vec::new();
 
@@ -227,16 +268,18 @@ pub fn layout_single_staff(score: &Score, max_width: Sp) -> StaffLayout {
                     continue;
                 }
 
+                let yof = y_top(sys_index);
                 let mut ys: Vec<Sp> = Vec::new();
                 for n in &cr.notes {
                     if let Some(y) = vertical::note_y(&n.pitch, clef) {
-                        let yy = y + y_top(sys_index);
+                        let yy = y + yof;
                         glyphs.push(PlacedGlyph {
                             pos: Point { x, y: yy },
                             glyph: Glyph::notehead_for(cr.duration.base),
                             element_id: Some(cr.id.value()),
                         });
                         ys.push(yy);
+                        push_ledgers(&mut ledgers, x, y, yof);
                     }
                     // pitch inválido: sem glifo (não há como posicionar)
                 }
@@ -321,6 +364,7 @@ pub fn layout_single_staff(score: &Score, max_width: Sp) -> StaffLayout {
         glyphs,
         barlines,
         stems,
+        ledgers,
     }
 }
 
@@ -567,6 +611,45 @@ mod tests {
             .x;
         // haste para baixo fica no x da cabeça; para cima ficaria em head_x + NOTEHEAD_W.
         assert_eq!(l.stems[0].x, head_x);
+    }
+
+    #[test]
+    fn nota_fora_da_pauta_ganha_linha_suplementar() {
+        // C4 em clave de sol fica em y=5 (1ª suplementar abaixo).
+        let v = Voice {
+            voice_id: 0,
+            elements: vec![elem(
+                1,
+                Fraction::ZERO,
+                DurationBase::Quarter,
+                vec![note(10, 'C', 4)],
+            )],
+        };
+        let l = layout_single_staff(
+            &score_1m(StaffType::Single(Clef::Treble), vec![v]),
+            MAX_SYSTEM_WIDTH,
+        );
+        assert_eq!(l.ledgers.len(), 1);
+        assert_eq!(l.ledgers[0].y, 5.0);
+    }
+
+    #[test]
+    fn nota_dentro_da_pauta_nao_tem_suplementar() {
+        // G4 fica na linha central da clave de sol (y=3), dentro da pauta.
+        let v = Voice {
+            voice_id: 0,
+            elements: vec![elem(
+                1,
+                Fraction::ZERO,
+                DurationBase::Quarter,
+                vec![note(10, 'G', 4)],
+            )],
+        };
+        let l = layout_single_staff(
+            &score_1m(StaffType::Single(Clef::Treble), vec![v]),
+            MAX_SYSTEM_WIDTH,
+        );
+        assert!(l.ledgers.is_empty());
     }
 
     #[test]
