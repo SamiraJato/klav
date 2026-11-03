@@ -22,28 +22,32 @@ const DEFAULT_TS: TimeSignature = TimeSignature {
     denominator: 4,
 };
 
-/// Move a nota selecionada da aba ativa um passo diatônico.
+/// Transpõe (um passo diatônico) as notas do elemento selecionado da aba ativa.
 pub fn transpose_active(mut tabs: Signal<Vec<Tab>>, active: Signal<usize>, up: bool) {
     let a = *active.peek();
     let mut w = tabs.write();
     if let Some(tab) = w.get_mut(a) {
         if let Some(id) = tab.selected {
-            transpose_in_score(&mut tab.score, id, up);
+            transpose_element(&mut tab.score, id, up);
         }
     }
 }
 
-/// Aplica a transposição diatônica à nota de id `id` em todo o Score.
-pub fn transpose_in_score(score: &mut Score, id: u64, up: bool) {
-    for m in score.measures.iter_mut() {
-        for v in m.voices.iter_mut() {
-            for cr in v.elements.iter_mut() {
-                for n in cr.notes.iter_mut() {
-                    if n.id.value() == id {
-                        n.pitch = step_pitch(n.pitch, up);
-                    }
-                }
-            }
+/// Encontra o `ChordOrRest` de id `elem_id` para edição.
+fn element_mut(score: &mut Score, elem_id: u64) -> Option<&mut ChordOrRest> {
+    score
+        .measures
+        .iter_mut()
+        .flat_map(|m| m.voices.iter_mut())
+        .flat_map(|v| v.elements.iter_mut())
+        .find(|cr| cr.id.value() == elem_id)
+}
+
+/// Transpõe diatonicamente todas as notas do elemento `elem_id` (pausa: nada a fazer).
+pub fn transpose_element(score: &mut Score, elem_id: u64, up: bool) {
+    if let Some(cr) = element_mut(score, elem_id) {
+        for n in cr.notes.iter_mut() {
+            n.pitch = step_pitch(n.pitch, up);
         }
     }
 }
@@ -177,7 +181,7 @@ fn free_slot(score: &mut Score, frac: Fraction) -> Option<(usize, usize, Fractio
 }
 
 /// Adiciona uma nota de altura padrão (C4) e duração `base` na próxima posição livre da voz 0
-/// do último compasso (criando compasso se preciso). Devolve o `NoteId` criado, ou `None`.
+/// do último compasso (criando compasso se preciso). Devolve o `ElementId` criado, ou `None`.
 pub fn add_note_with(score: &mut Score, base: DurationBase) -> Option<u64> {
     let duration = Duration::new(base, 0);
     let (mi, vi, start) = free_slot(score, duration.as_fraction())?;
@@ -196,7 +200,7 @@ pub fn add_note_with(score: &mut Score, base: DurationBase) -> Option<u64> {
         }],
         tuplet: None,
     });
-    Some(nid)
+    Some(eid)
 }
 
 /// Adiciona uma pausa de duração `base` na próxima posição livre. Devolve o `ElementId`.
@@ -215,50 +219,73 @@ pub fn add_rest_with(score: &mut Score, base: DurationBase) -> Option<u64> {
     Some(eid)
 }
 
-/// Remove a nota `id` do documento. Primeiro zera qualquer `tie_to` que aponte para ela
-/// (evitando ligadura pendurada); depois tira a nota. Se o elemento ficar sem notas, remove
-/// o elemento inteiro e o retira de membros de quiálteras. Devolve `true` se algo foi removido.
-pub fn delete_note(score: &mut Score, id: u64) -> bool {
-    // 1. Desfaz ties que apontam para a nota removida.
+/// Zera qualquer `tie_to` que aponte para uma nota em `gone`.
+fn clear_ties_to(score: &mut Score, gone: &[u64]) {
     for m in score.measures.iter_mut() {
         for v in m.voices.iter_mut() {
             for cr in v.elements.iter_mut() {
                 for n in cr.notes.iter_mut() {
-                    if n.tie_to.map(|t| t.value()) == Some(id) {
+                    if n.tie_to
+                        .map(|t| t.value())
+                        .is_some_and(|t| gone.contains(&t))
+                    {
                         n.tie_to = None;
                     }
                 }
             }
         }
     }
+}
 
-    // 2. Localiza e remove a nota; coleta o elemento a remover se ficar vazio.
-    let mut removed = false;
-    let mut empty_element: Option<(usize, usize, usize, u64)> = None; // (mi, vi, ei, element_id)
-    'outer: for (mi, m) in score.measures.iter_mut().enumerate() {
-        for (vi, v) in m.voices.iter_mut().enumerate() {
-            for (ei, cr) in v.elements.iter_mut().enumerate() {
-                if let Some(pos) = cr.notes.iter().position(|n| n.id.value() == id) {
-                    cr.notes.remove(pos);
-                    removed = true;
-                    if cr.notes.is_empty() {
-                        empty_element = Some((mi, vi, ei, cr.id.value()));
-                    }
-                    break 'outer;
+/// Posição `(mi, vi, ei)` do elemento de id `elem_id`.
+fn locate_element(score: &Score, elem_id: u64) -> Option<(usize, usize, usize)> {
+    for (mi, m) in score.measures.iter().enumerate() {
+        for (vi, v) in m.voices.iter().enumerate() {
+            for (ei, cr) in v.elements.iter().enumerate() {
+                if cr.id.value() == elem_id {
+                    return Some((mi, vi, ei));
                 }
             }
         }
     }
+    None
+}
 
-    // 3. Remove o elemento vazio e o tira de membros de quiálteras do compasso.
-    if let Some((mi, vi, ei, eid)) = empty_element {
-        score.measures[mi].voices[vi].elements.remove(ei);
-        for t in score.measures[mi].tuplets.iter_mut() {
-            t.members.retain(|e| e.value() != eid);
-        }
+/// Remove o elemento `elem_id` (nota/acorde ou pausa): zera ties que apontavam para suas
+/// notas e o tira de membros de quiálteras. Devolve `true` se achou.
+pub fn delete_element(score: &mut Score, elem_id: u64) -> bool {
+    let Some((mi, vi, ei)) = locate_element(score, elem_id) else {
+        return false;
+    };
+    let gone: Vec<u64> = score.measures[mi].voices[vi].elements[ei]
+        .notes
+        .iter()
+        .map(|n| n.id.value())
+        .collect();
+    clear_ties_to(score, &gone);
+    score.measures[mi].voices[vi].elements.remove(ei);
+    for t in score.measures[mi].tuplets.iter_mut() {
+        t.members.retain(|e| e.value() != elem_id);
     }
+    true
+}
 
-    removed
+/// Transforma o elemento `elem_id` em pausa: remove as notas (mantendo duração e posição) e
+/// zera ties que apontavam para elas. Devolve `true` se achou.
+pub fn convert_to_rest(score: &mut Score, elem_id: u64) -> bool {
+    let Some((mi, vi, ei)) = locate_element(score, elem_id) else {
+        return false;
+    };
+    let gone: Vec<u64> = score.measures[mi].voices[vi].elements[ei]
+        .notes
+        .iter()
+        .map(|n| n.id.value())
+        .collect();
+    clear_ties_to(score, &gone);
+    let cr = &mut score.measures[mi].voices[vi].elements[ei];
+    cr.notes.clear();
+    cr.is_rest = true;
+    true
 }
 
 // --- Wrappers que tocam os Signal da UI, validando antes de efetivar. ---
@@ -314,6 +341,37 @@ pub fn add_rest_with_active(
     }
 }
 
+/// Com elemento selecionado: transforma-o em pausa. Sem seleção: adiciona uma pausa nova com
+/// a duração ativa. Valida antes de efetivar.
+pub fn rest_or_convert_active(
+    mut tabs: Signal<Vec<Tab>>,
+    active: Signal<usize>,
+    mut status: Signal<String>,
+    current: Signal<DurationBase>,
+) {
+    let a = *active.peek();
+    let sel = tabs.peek().get(a).and_then(|t| t.selected);
+    let Some(id) = sel else {
+        add_rest_with_active(tabs, active, status, *current.peek());
+        return;
+    };
+    let Some(mut score) = tabs.read().get(a).map(|t| t.score.clone()) else {
+        return;
+    };
+    if !convert_to_rest(&mut score, id) {
+        return;
+    }
+    match score.validate() {
+        Ok(()) => {
+            if let Some(t) = tabs.write().get_mut(a) {
+                t.score = score;
+            }
+            status.set("virou pausa".into());
+        }
+        Err(e) => status.set(format!("edição inválida: {e:?}")),
+    }
+}
+
 /// Define a duração ativa (para novas notas) e, se houver nota selecionada, aplica-a a ela
 /// também — sem reclamar quando não há seleção (só trocar a duração ativa é válido).
 pub fn pick_duration(
@@ -353,7 +411,7 @@ pub fn add_measure_active(
     }
 }
 
-/// Apaga a nota selecionada da aba ativa.
+/// Apaga o elemento selecionado (nota/acorde ou pausa) da aba ativa.
 pub fn delete_selected_active(
     mut tabs: Signal<Vec<Tab>>,
     active: Signal<usize>,
@@ -364,11 +422,11 @@ pub fn delete_selected_active(
         return;
     };
     let Some(id) = sel else {
-        status.set("selecione uma nota para apagar".into());
+        status.set("selecione algo para apagar".into());
         return;
     };
-    if !delete_note(&mut score, id) {
-        status.set("nota não encontrada".into());
+    if !delete_element(&mut score, id) {
+        status.set("elemento não encontrado".into());
         return;
     }
     match score.validate() {
@@ -377,7 +435,7 @@ pub fn delete_selected_active(
                 t.score = score;
                 t.selected = None;
             }
-            status.set(format!("nota {id} apagada"));
+            status.set("apagado".into());
         }
         Err(e) => status.set(format!("edição inválida: {e:?}")),
     }
@@ -388,31 +446,40 @@ pub fn delete_selected_active(
 // e navegação entre notas. Funções puras + wrappers que validam antes de efetivar.
 // ---------------------------------------------------------------------------
 
-/// Aplica `f` à nota de id `id` (a primeira que casar). Devolve `true` se achou.
-fn mutate_note(score: &mut Score, id: u64, f: impl FnOnce(&mut Note)) -> bool {
-    for m in score.measures.iter_mut() {
-        for v in m.voices.iter_mut() {
-            for cr in v.elements.iter_mut() {
-                if let Some(n) = cr.notes.iter_mut().find(|n| n.id.value() == id) {
-                    f(n);
-                    return true;
-                }
-            }
+/// Define o nome (A–G) do elemento `elem_id`, preservando a oitava e zerando o acidente de
+/// cada nota. Se o elemento for uma pausa, vira uma nota dessa altura (C4 por padrão).
+pub fn set_step(score: &mut Score, elem_id: u64, step: char) -> bool {
+    let step = step.to_ascii_uppercase();
+    let new_note_id = next_note_id(score);
+    let Some(cr) = element_mut(score, elem_id) else {
+        return false;
+    };
+    if cr.notes.is_empty() {
+        // pausa -> nota
+        cr.is_rest = false;
+        cr.notes.push(Note {
+            id: NoteId(new_note_id),
+            pitch: Pitch::new(step, DEFAULT_OCTAVE, None),
+            velocity: 80,
+            tie_to: None,
+        });
+    } else {
+        for n in cr.notes.iter_mut() {
+            n.pitch = Pitch::new(step, n.pitch.octave, None);
         }
     }
-    false
+    true
 }
 
-/// Define o nome (A–G) da nota, preservando a oitava e zerando o acidente.
-pub fn set_step(score: &mut Score, id: u64, step: char) -> bool {
-    mutate_note(score, id, |n| {
-        n.pitch = Pitch::new(step.to_ascii_uppercase(), n.pitch.octave, None);
-    })
-}
-
-/// Define (ou remove, com `None`) o acidente da nota.
-pub fn set_accidental(score: &mut Score, id: u64, acc: Option<Accidental>) -> bool {
-    mutate_note(score, id, |n| n.pitch.accidental = acc)
+/// Define (ou remove, com `None`) o acidente de cada nota do elemento (pausa: nada a fazer).
+pub fn set_accidental(score: &mut Score, elem_id: u64, acc: Option<Accidental>) -> bool {
+    let Some(cr) = element_mut(score, elem_id) else {
+        return false;
+    };
+    for n in cr.notes.iter_mut() {
+        n.pitch.accidental = acc;
+    }
+    true
 }
 
 /// Recalcula os `start` de uma voz como durações contíguas (reflow), aplicando o fator
@@ -431,11 +498,11 @@ fn reflow(elements: &mut [ChordOrRest], ratios: &HashMap<u64, Fraction>) {
     }
 }
 
-/// Troca a duração (base, sem pontos) do elemento que contém a nota `id` e refaz o
-/// encadeamento (reflow) da voz, mantendo-a contígua. Devolve `true` se achou a nota.
+/// Troca a duração (base, sem pontos) do elemento `elem_id` e refaz o encadeamento (reflow)
+/// da voz, mantendo-a contígua. Devolve `true` se achou.
 ///
 /// Não checa se cabe no compasso: quem chama valida o Score e desfaz se estourar.
-pub fn set_duration(score: &mut Score, id: u64, base: DurationBase) -> bool {
+pub fn set_duration(score: &mut Score, elem_id: u64, base: DurationBase) -> bool {
     for m in score.measures.iter_mut() {
         let ratios: HashMap<u64, Fraction> = m
             .tuplets
@@ -449,11 +516,7 @@ pub fn set_duration(score: &mut Score, id: u64, base: DurationBase) -> bool {
             })
             .collect();
         for v in m.voices.iter_mut() {
-            if let Some(ei) = v
-                .elements
-                .iter()
-                .position(|cr| cr.notes.iter().any(|n| n.id.value() == id))
-            {
+            if let Some(ei) = v.elements.iter().position(|cr| cr.id.value() == elem_id) {
                 v.elements[ei].duration = Duration::new(base, 0);
                 reflow(&mut v.elements, &ratios);
                 return true;
@@ -475,25 +538,23 @@ pub fn duration_base_from_key(d: char) -> Option<DurationBase> {
     })
 }
 
-/// Todos os `NoteId` do documento em ordem (compasso → voz → elemento → nota).
-pub fn note_ids_in_order(score: &Score) -> Vec<u64> {
+/// Todos os `ElementId` do documento em ordem (compasso → voz → elemento).
+pub fn element_ids_in_order(score: &Score) -> Vec<u64> {
     let mut out = Vec::new();
     for m in &score.measures {
         for v in &m.voices {
             for cr in &v.elements {
-                for n in &cr.notes {
-                    out.push(n.id.value());
-                }
+                out.push(cr.id.value());
             }
         }
     }
     out
 }
 
-/// Vizinho de `current` na ordem do documento. Sem seleção, pega a primeira (ou última)
-/// nota. Nas pontas, permanece na nota atual. `None` se não houver notas.
-pub fn neighbor_note(score: &Score, current: Option<u64>, forward: bool) -> Option<u64> {
-    let ids = note_ids_in_order(score);
+/// Vizinho de `current` na ordem do documento (notas E pausas). Sem seleção, pega o primeiro
+/// (ou último) elemento. Nas pontas, permanece no atual. `None` se não houver elementos.
+pub fn neighbor_element(score: &Score, current: Option<u64>, forward: bool) -> Option<u64> {
+    let ids = element_ids_in_order(score);
     if ids.is_empty() {
         return None;
     }
@@ -515,14 +576,86 @@ pub fn neighbor_note(score: &Score, current: Option<u64>, forward: bool) -> Opti
     }
 }
 
-/// Move a seleção da aba ativa para a nota anterior/seguinte.
+/// Move a seleção da aba ativa para o elemento anterior/seguinte (nota ou pausa).
 pub fn navigate_active(mut tabs: Signal<Vec<Tab>>, active: Signal<usize>, forward: bool) {
     let a = *active.peek();
     let mut w = tabs.write();
     if let Some(t) = w.get_mut(a) {
-        if let Some(next) = neighbor_note(&t.score, t.selected, forward) {
+        if let Some(next) = neighbor_element(&t.score, t.selected, forward) {
             t.selected = Some(next);
         }
+    }
+}
+
+/// `true` se uma nota de duração `base` ainda cabe no último compasso da voz 0 **sem** criar
+/// um compasso novo (ou seja, o compasso atual ainda não está completo).
+pub fn fits_without_new_measure(score: &Score, base: DurationBase) -> bool {
+    let frac = Duration::new(base, 0).as_fraction();
+    if score.measures.is_empty() {
+        return true; // sem compassos: escrever cria o primeiro
+    }
+    let mi = score.measures.len() - 1;
+    let measure_dur = measure_dur_at(score, mi);
+    let next_start = score.measures[mi]
+        .voices
+        .iter()
+        .find(|v| v.voice_id == 0)
+        .and_then(|v| v.elements.last())
+        .map(|e| e.start + e.duration.as_fraction())
+        .unwrap_or(Fraction::ZERO);
+    next_start + frac <= measure_dur
+}
+
+/// Navega para a direita, mas se já estiver na última nota e o compasso atual ainda tiver
+/// espaço, **escreve** a próxima nota (duração ativa) em vez de parar. Para a esquerda, só
+/// navega. É o avanço do fluxo de escrita por teclado.
+pub fn navigate_or_write(
+    tabs: Signal<Vec<Tab>>,
+    active: Signal<usize>,
+    status: Signal<String>,
+    current: Signal<DurationBase>,
+    forward: bool,
+) {
+    if !forward {
+        navigate_active(tabs, active, false);
+        return;
+    }
+
+    let a = *active.peek();
+    // Há um próximo elemento distinto do atual? Então é só navegar.
+    let next = {
+        let w = tabs.peek();
+        w.get(a).and_then(|t| {
+            let n = neighbor_element(&t.score, t.selected, true);
+            match (t.selected, n) {
+                (sel, Some(n)) if sel != Some(n) => Some(n),
+                _ => None,
+            }
+        })
+    };
+
+    if let Some(n) = next {
+        navigate_to(tabs, active, n);
+        return;
+    }
+
+    // Estamos no fim: escreve, se couber no compasso atual (não cria compasso novo).
+    let base = *current.peek();
+    let fits = tabs
+        .peek()
+        .get(a)
+        .map(|t| fits_without_new_measure(&t.score, base))
+        .unwrap_or(false);
+    if fits {
+        add_note_with_active(tabs, active, status, base);
+    }
+}
+
+/// Seleciona a nota `id` na aba ativa.
+fn navigate_to(mut tabs: Signal<Vec<Tab>>, active: Signal<usize>, id: u64) {
+    let a = *active.peek();
+    if let Some(t) = tabs.write().get_mut(a) {
+        t.selected = Some(id);
     }
 }
 
@@ -754,47 +887,54 @@ mod tests {
     }
 
     #[test]
-    fn delete_note_remove_elemento_vazio() {
+    fn delete_element_remove_o_elemento() {
         let mut s = n_quarters(1);
-        assert!(delete_note(&mut s, 1));
+        assert!(delete_element(&mut s, 1));
         assert_eq!(count_notes(&s), 0);
         assert!(s.measures[0].voices[0].elements.is_empty());
         assert_eq!(s.validate(), Ok(()));
     }
 
     #[test]
-    fn delete_note_inexistente_retorna_false() {
+    fn delete_element_inexistente_retorna_false() {
         let mut s = n_quarters(1);
-        assert!(!delete_note(&mut s, 999));
+        assert!(!delete_element(&mut s, 999));
         assert_eq!(count_notes(&s), 1);
     }
 
     #[test]
-    fn delete_note_de_acorde_mantem_elemento() {
+    fn delete_element_remove_acorde_inteiro() {
         let mut s = n_quarters(1);
-        // transforma o 1º elemento num acorde de 2 notas (ids 1 e 2).
+        // acorde de 2 notas no elemento 1; apagar o elemento remove tudo.
         s.measures[0].voices[0].elements[0].notes.push(Note {
             id: NoteId(2),
             pitch: Pitch::new('E', 4, None),
             velocity: 80,
             tie_to: None,
         });
-        assert!(delete_note(&mut s, 1));
-        let el = &s.measures[0].voices[0].elements;
-        assert_eq!(el.len(), 1, "o elemento permanece");
-        assert_eq!(el[0].notes.len(), 1);
-        assert_eq!(el[0].notes[0].id.value(), 2);
+        assert!(delete_element(&mut s, 1));
+        assert!(s.measures[0].voices[0].elements.is_empty());
         assert_eq!(s.validate(), Ok(()));
     }
 
     #[test]
-    fn delete_note_limpa_tie_pendurado() {
-        let mut s = n_quarters(2); // notas 1 e 2 (C4), adjacentes
+    fn delete_element_limpa_tie_pendurado() {
+        let mut s = n_quarters(2); // elementos/notas 1 e 2 (C4), adjacentes
         s.measures[0].voices[0].elements[0].notes[0].tie_to = Some(NoteId(2));
         assert_eq!(s.validate(), Ok(())); // tie válido (mesma altura, imediato)
-        assert!(delete_note(&mut s, 2)); // apaga o alvo do tie
+        assert!(delete_element(&mut s, 2)); // apaga o elemento alvo do tie
         let n1 = &s.measures[0].voices[0].elements[0].notes[0];
         assert_eq!(n1.tie_to, None); // a nota 1 não pode ficar com tie pendurado
+        assert_eq!(s.validate(), Ok(()));
+    }
+
+    #[test]
+    fn convert_to_rest_transforma_nota_em_pausa() {
+        let mut s = n_quarters(1);
+        assert!(convert_to_rest(&mut s, 1));
+        let cr = &s.measures[0].voices[0].elements[0];
+        assert!(cr.is_rest);
+        assert!(cr.notes.is_empty());
         assert_eq!(s.validate(), Ok(()));
     }
 
@@ -859,19 +999,35 @@ mod tests {
 
     #[test]
     fn navegacao_anda_e_para_nas_pontas() {
-        let s = n_quarters(3); // notas 1,2,3
-        assert_eq!(neighbor_note(&s, None, true), Some(1));
-        assert_eq!(neighbor_note(&s, None, false), Some(3));
-        assert_eq!(neighbor_note(&s, Some(1), true), Some(2));
-        assert_eq!(neighbor_note(&s, Some(2), false), Some(1));
-        assert_eq!(neighbor_note(&s, Some(3), true), Some(3)); // última: permanece
-        assert_eq!(neighbor_note(&s, Some(1), false), Some(1)); // primeira: permanece
+        let s = n_quarters(3); // elementos 1,2,3
+        assert_eq!(neighbor_element(&s, None, true), Some(1));
+        assert_eq!(neighbor_element(&s, None, false), Some(3));
+        assert_eq!(neighbor_element(&s, Some(1), true), Some(2));
+        assert_eq!(neighbor_element(&s, Some(2), false), Some(1));
+        assert_eq!(neighbor_element(&s, Some(3), true), Some(3)); // último: permanece
+        assert_eq!(neighbor_element(&s, Some(1), false), Some(1)); // primeiro: permanece
     }
 
     #[test]
-    fn navegacao_em_score_sem_notas_e_none() {
+    fn navegacao_inclui_pausas() {
+        let mut s = n_quarters(1);
+        add_rest_with(&mut s, DurationBase::Quarter); // elemento 2 = pausa
+        assert_eq!(neighbor_element(&s, Some(1), true), Some(2)); // navega para a pausa
+    }
+
+    #[test]
+    fn navegacao_em_score_sem_elementos_e_none() {
         let mut s = n_quarters(0);
         s.measures.clear();
-        assert_eq!(neighbor_note(&s, None, true), None);
+        assert_eq!(neighbor_element(&s, None, true), None);
+    }
+
+    #[test]
+    fn fits_respeita_o_espaco_restante_do_compasso() {
+        let s = n_quarters(3); // 3/4 usados em 4/4; falta 1/4
+        assert!(fits_without_new_measure(&s, DurationBase::Quarter)); // 1/4 cabe
+        assert!(!fits_without_new_measure(&s, DurationBase::Half)); // 1/2 não cabe
+        let cheio = n_quarters(4);
+        assert!(!fits_without_new_measure(&cheio, DurationBase::Quarter)); // compasso cheio
     }
 }

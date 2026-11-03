@@ -21,9 +21,9 @@ use dioxus::prelude::*;
 
 use document::{close_tab, open_file, Tab};
 use edit::{
-    add_measure_active, add_note_with_active, add_rest_with_active, delete_selected_active,
-    duration_base_from_key, navigate_active, pick_duration, set_accidental_active, set_step_active,
-    transpose_active,
+    add_measure_active, add_note_with_active, delete_selected_active, duration_base_from_key,
+    navigate_active, navigate_or_write, pick_duration, rest_or_convert_active,
+    set_accidental_active, set_step_active, transpose_active,
 };
 use keyboard::{keyboard_geometry, BLACK_W, WHITE_W};
 use project::scan_klav;
@@ -235,7 +235,7 @@ fn App() -> Element {
     let down = move |_| transpose_active(tabs, active, false);
 
     let add_note = move |_| add_note_with_active(tabs, active, status, *current_dur.peek());
-    let add_rest = move |_| add_rest_with_active(tabs, active, status, *current_dur.peek());
+    let add_rest = move |_| rest_or_convert_active(tabs, active, status, current_dur);
     let add_meas = move |_| add_measure_active(tabs, active, status);
     let delete = move |_| delete_selected_active(tabs, active, status);
 
@@ -243,7 +243,7 @@ fn App() -> Element {
     // ativa, 1–5 escolhem a duração ativa (e aplicam à nota selecionada), ↑/↓ transpõem,
     // A–G altura, #/+ e - acidentes, n natural, 0/R pausa, Del/Backspace apaga.
     let on_key = move |evt: KeyboardEvent| match evt.key() {
-        Key::ArrowRight => navigate_active(tabs, active, true),
+        Key::ArrowRight => navigate_or_write(tabs, active, status, current_dur, true),
         Key::ArrowLeft => navigate_active(tabs, active, false),
         Key::ArrowUp => transpose_active(tabs, active, true),
         Key::ArrowDown => transpose_active(tabs, active, false),
@@ -263,7 +263,7 @@ fn App() -> Element {
                 "#" | "+" => set_accidental_active(tabs, active, status, Some(Accidental::Sharp)),
                 "-" => set_accidental_active(tabs, active, status, Some(Accidental::Flat)),
                 "n" => set_accidental_active(tabs, active, status, None),
-                "0" | "r" => add_rest_with_active(tabs, active, status, *current_dur.peek()),
+                "0" | "r" => rest_or_convert_active(tabs, active, status, current_dur),
                 _ => {}
             }
         }
@@ -360,7 +360,7 @@ fn App() -> Element {
                 }
                 button {
                     class: "btn",
-                    title: "Adiciona pausa com a duração ativa (tecla 0 ou R)",
+                    title: "Pausa: transforma o selecionado em pausa, ou adiciona uma (tecla 0 ou R)",
                     onclick: add_rest,
                     "＋ pausa"
                 }
@@ -486,8 +486,8 @@ fn App() -> Element {
                                         let ch = g.glyph.codepoint();
                                         let x = px_x(g.pos.x);
                                         let y = px_y(g.pos.y);
-                                        let nid = g.note_id;
-                                        let is_sel = nid.is_some() && sel == nid;
+                                        let eid = g.element_id;
+                                        let is_sel = eid.is_some() && sel == eid;
                                         let fill = if is_sel { "crimson" } else { "#111" };
                                         rsx! {
                                             text {
@@ -495,9 +495,9 @@ fn App() -> Element {
                                                 font_family: "Bravura",
                                                 font_size: "{SP_PX * 4.0}",
                                                 fill: "{fill}",
-                                                style: if nid.is_some() { "cursor: pointer;" } else { "" },
+                                                style: if eid.is_some() { "cursor: pointer;" } else { "" },
                                                 onclick: move |_| {
-                                                    if let Some(id) = nid {
+                                                    if let Some(id) = eid {
                                                         let a = *active.peek();
                                                         if let Some(t) = tabs.write().get_mut(a) {
                                                             t.selected = Some(id);

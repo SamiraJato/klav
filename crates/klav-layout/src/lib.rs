@@ -65,8 +65,9 @@ pub struct Point {
 pub struct PlacedGlyph {
     pub pos: Point,
     pub glyph: Glyph,
-    /// `NoteId` de origem (para hit-testing/edição), quando o glifo é uma cabeça de nota.
-    pub note_id: Option<u64>,
+    /// `ElementId` de origem (para hit-testing/seleção), quando o glifo pertence a um
+    /// `ChordOrRest` — cabeça de nota OU pausa. `None` para clave e bandeirola.
+    pub element_id: Option<u64>,
 }
 
 /// Barra de compasso vertical: vai de `y_top` até `y_top + (STAFF_LINE_COUNT-1)`.
@@ -162,7 +163,7 @@ fn push_clef(glyphs: &mut Vec<PlacedGlyph>, clef: Clef, y_top: Sp) {
             y: y + y_top,
         },
         glyph,
-        note_id: None,
+        element_id: None,
     });
 }
 
@@ -221,7 +222,7 @@ pub fn layout_single_staff(score: &Score, max_width: Sp) -> StaffLayout {
                             y: 2.0 + y_top(sys_index),
                         },
                         glyph: Glyph::rest_for(cr.duration.base),
-                        note_id: None,
+                        element_id: Some(cr.id.value()),
                     });
                     continue;
                 }
@@ -233,7 +234,7 @@ pub fn layout_single_staff(score: &Score, max_width: Sp) -> StaffLayout {
                         glyphs.push(PlacedGlyph {
                             pos: Point { x, y: yy },
                             glyph: Glyph::notehead_for(cr.duration.base),
-                            note_id: Some(n.id.value()),
+                            element_id: Some(cr.id.value()),
                         });
                         ys.push(yy);
                     }
@@ -271,7 +272,7 @@ pub fn layout_single_staff(score: &Score, max_width: Sp) -> StaffLayout {
                                 y: flag_y,
                             },
                             glyph: flag,
-                            note_id: None,
+                            element_id: None,
                         });
                     }
                 }
@@ -404,7 +405,15 @@ mod tests {
     }
 
     fn noteheads(l: &StaffLayout) -> Vec<&PlacedGlyph> {
-        l.glyphs.iter().filter(|g| g.note_id.is_some()).collect()
+        l.glyphs
+            .iter()
+            .filter(|g| {
+                matches!(
+                    g.glyph,
+                    Glyph::NoteheadBlack | Glyph::NoteheadHalf | Glyph::NoteheadWhole
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -431,7 +440,7 @@ mod tests {
                                          // 1ª nota não fica colada na barra: começa após o respiro.
         let x_esperado = MARGIN + CLEF_WIDTH + MEASURE_PAD;
         assert_eq!(heads[0].pos.x, x_esperado);
-        assert_eq!(heads[0].note_id, Some(10));
+        assert_eq!(heads[0].element_id, Some(1)); // id do ChordOrRest
     }
 
     #[test]
@@ -552,7 +561,7 @@ mod tests {
         let head_x = l
             .glyphs
             .iter()
-            .find(|g| g.note_id == Some(10))
+            .find(|g| g.glyph == Glyph::NoteheadBlack)
             .unwrap()
             .pos
             .x;
