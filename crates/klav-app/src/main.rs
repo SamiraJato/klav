@@ -20,7 +20,7 @@ use dioxus::desktop::{use_window, Config, LogicalSize, WindowBuilder};
 use dioxus::prelude::*;
 
 use document::{close_tab, open_file, Tab};
-use edit::transpose_active;
+use edit::{add_measure_active, add_note_active, delete_selected_active, transpose_active};
 use keyboard::{keyboard_geometry, BLACK_W, WHITE_W};
 use project::scan_klav;
 use synth::{SynthCmd, SynthRuntime};
@@ -221,6 +221,10 @@ fn App() -> Element {
     let up = move |_| transpose_active(tabs, active, true);
     let down = move |_| transpose_active(tabs, active, false);
 
+    let add_note = move |_| add_note_active(tabs, active, status);
+    let add_meas = move |_| add_measure_active(tabs, active, status);
+    let delete = move |_| delete_selected_active(tabs, active, status);
+
     let play_pause = move |_| {
         let is_playing = *playing.peek();
         if !is_playing && *position.peek() >= *total_secs.peek() {
@@ -282,6 +286,10 @@ fn App() -> Element {
                 span { class: "brand", "klav" }
                 button { class: "btn", onclick: open_folder, "Abrir pasta" }
                 button { class: "btn", onclick: save, "Salvar" }
+                span { class: "divider" }
+                button { class: "btn", onclick: add_note, "＋ nota" }
+                button { class: "btn", onclick: add_meas, "＋ compasso" }
+                button { class: "btn", disabled: sel.is_none(), onclick: delete, "🗑 Apagar" }
                 span { class: "divider" }
                 button { class: "btn", disabled: sel.is_none(), onclick: up, "♪ ↑" }
                 button { class: "btn", disabled: sel.is_none(), onclick: down, "♪ ↓" }
