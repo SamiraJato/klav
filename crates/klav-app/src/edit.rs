@@ -606,6 +606,56 @@ pub fn navigate_active(mut tabs: Signal<Vec<Tab>>, active: Signal<usize>, forwar
     }
 }
 
+/// Altura da primeira nota do elemento selecionado (para a prévia "fantasma" seguir a seleção).
+pub fn selected_pitch(score: &Score, selection: Option<u64>) -> Option<Pitch> {
+    let id = selection?;
+    let (mi, vi, ei) = locate_element(score, id)?;
+    score.measures[mi].voices[vi].elements[ei]
+        .notes
+        .first()
+        .map(|n| n.pitch)
+}
+
+/// Onde a próxima nota (duração `base`) seria escrita a partir da seleção, **sem** alterar o
+/// Score: devolve `(mi, start)` no compasso. `mi` pode ser igual ao nº de compassos quando a
+/// nota transbordaria para um compasso ainda inexistente.
+pub fn pending_slot(
+    score: &Score,
+    selection: Option<u64>,
+    base: DurationBase,
+) -> (usize, Fraction) {
+    let frac = Duration::new(base, 0).as_fraction();
+    if score.measures.is_empty() {
+        return (0, Fraction::ZERO);
+    }
+    let last = score.measures.len() - 1;
+    let start_mi = selection
+        .and_then(|id| locate_element(score, id))
+        .map(|(mi, _, _)| mi)
+        .unwrap_or(last);
+    let mut mi = start_mi.min(last);
+    loop {
+        let measure_dur = measure_dur_at(score, mi);
+        let next_start = score.measures[mi]
+            .voices
+            .iter()
+            .find(|v| v.voice_id == 0)
+            .and_then(|v| v.elements.last())
+            .map(|e| e.start + e.duration.as_fraction())
+            .unwrap_or(Fraction::ZERO);
+        if next_start + frac <= measure_dur {
+            return (mi, next_start);
+        }
+        if next_start == Fraction::ZERO {
+            return (mi, Fraction::ZERO);
+        }
+        if mi + 1 > last {
+            return (mi + 1, Fraction::ZERO);
+        }
+        mi += 1;
+    }
+}
+
 /// `true` se uma nota de duração `base` ainda cabe no último compasso da voz 0 **sem** criar
 /// um compasso novo (ou seja, o compasso atual ainda não está completo).
 pub fn fits_without_new_measure(score: &Score, base: DurationBase) -> bool {
@@ -1064,6 +1114,21 @@ mod tests {
         let mut s = n_quarters(0);
         s.measures.clear();
         assert_eq!(neighbor_element(&s, None, true), None);
+    }
+
+    #[test]
+    fn pending_slot_aponta_a_proxima_posicao() {
+        let s = n_quarters(2); // 2 semínimas em 4/4
+        assert_eq!(
+            pending_slot(&s, Some(1), DurationBase::Quarter),
+            (0, Fraction::new(1, 2))
+        );
+        // compasso cheio: transborda para um compasso ainda inexistente (mi == nº de compassos)
+        let cheio = n_quarters(4);
+        assert_eq!(
+            pending_slot(&cheio, Some(1), DurationBase::Quarter),
+            (1, Fraction::ZERO)
+        );
     }
 
     #[test]

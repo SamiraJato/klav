@@ -22,17 +22,19 @@ use dioxus::prelude::*;
 use document::{close_tab, open_file, Tab};
 use edit::{
     add_measure_active, add_note_with_active, delete_selected_active, duration_base_from_key,
-    navigate_active, navigate_or_write, pick_duration, rest_or_convert_active,
-    set_accidental_active, set_step_active, transpose_active,
+    navigate_active, navigate_or_write, pending_slot, pick_duration, rest_or_convert_active,
+    selected_pitch, set_accidental_active, set_step_active, transpose_active,
 };
 use keyboard::{keyboard_geometry, BLACK_W, WHITE_W};
 use project::scan_klav;
 use synth::{SynthCmd, SynthRuntime};
 use theme::build_css;
 
-use klav_core::{Accidental, DurationBase};
+use klav_core::{Accidental, DurationBase, Pitch};
 use klav_engine::{key_intervals, render_events, total_duration_whole, whole_to_seconds};
-use klav_layout::{layout_single_staff, StaffLayout, MAX_SYSTEM_WIDTH};
+use klav_layout::{
+    layout_single_staff, vertical, Glyph, StaffLayout, MAX_SYSTEM_WIDTH, SPACE_PER_WHOLE,
+};
 
 /// Pixels por staff-space. No SMuFL, 1 em da fonte = 4 staff-spaces.
 const SP_PX: f64 = 10.0;
@@ -309,6 +311,28 @@ fn App() -> Element {
     let cursor = lay_opt.as_ref().and_then(|l| l.cursor_at(pos_whole));
     let show_cursor = playing() || pos_secs > 0.0;
 
+    // Prévia "fantasma": onde a próxima nota (barra de espaço) cairia e com que aparência.
+    // Mostra que a nota ainda NÃO foi escrita. Oculta durante o playback.
+    let dur = current_dur();
+    let ghost: Option<(f64, f64, char)> = if playing() {
+        None
+    } else {
+        match (lay_opt.as_ref(), active_score.read().as_ref()) {
+            (Some(lay), Some(score)) => {
+                let (mi, local) = pending_slot(score, sel, dur);
+                lay.measures.get(mi).and_then(|mb| {
+                    let pitch = selected_pitch(score, sel).unwrap_or(Pitch::new('C', 4, None));
+                    vertical::note_y(&pitch, lay.clef).map(|ny| {
+                        let x = px_x(mb.x_notes + local.to_f64() * SPACE_PER_WHOLE);
+                        let y = px_y(ny + mb.y_top);
+                        (x, y, Glyph::notehead_for(dur).codepoint())
+                    })
+                })
+            }
+            _ => None,
+        }
+    };
+
     let active_keys: HashSet<u8> = {
         let iv = intervals.read();
         iv.iter()
@@ -507,6 +531,15 @@ fn App() -> Element {
                                                 "{ch}"
                                             }
                                         }
+                                    }
+                                }
+                                if let Some((gx, gy, gch)) = ghost {
+                                    text {
+                                        x: "{gx}", y: "{gy}",
+                                        font_family: "Bravura",
+                                        font_size: "{SP_PX * 4.0}",
+                                        fill: "#3a7bd5", opacity: "0.4",
+                                        "{gch}"
                                     }
                                 }
                                 if let (true, Some((cx, cy))) = (show_cursor, cursor) {
