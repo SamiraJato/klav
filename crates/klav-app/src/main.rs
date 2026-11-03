@@ -21,16 +21,16 @@ use dioxus::prelude::*;
 
 use document::{close_tab, open_file, Tab};
 use edit::{
-    add_measure_active, add_note_active, add_rest_active, delete_selected_active,
-    duration_base_from_key, navigate_active, set_accidental_active, set_duration_active,
-    set_step_active, transpose_active,
+    add_measure_active, add_note_with_active, add_rest_with_active, delete_selected_active,
+    duration_base_from_key, navigate_active, pick_duration, set_accidental_active, set_step_active,
+    transpose_active,
 };
 use keyboard::{keyboard_geometry, BLACK_W, WHITE_W};
 use project::scan_klav;
 use synth::{SynthCmd, SynthRuntime};
 use theme::build_css;
 
-use klav_core::Accidental;
+use klav_core::{Accidental, DurationBase};
 use klav_engine::{key_intervals, render_events, total_duration_whole, whole_to_seconds};
 use klav_layout::{layout_single_staff, StaffLayout, MAX_SYSTEM_WIDTH};
 
@@ -73,6 +73,9 @@ fn App() -> Element {
     // Playback.
     let mut playing = use_signal(|| false);
     let mut position = use_signal(|| 0.0_f64);
+
+    // Duração ativa para a "escrita" de novas notas (barra de espaço / botões / 1–5).
+    let current_dur = use_signal(|| DurationBase::Quarter);
 
     // Áudio.
     let runtime = use_hook(|| Rc::new(RefCell::new(SynthRuntime::default_output())));
@@ -231,13 +234,14 @@ fn App() -> Element {
     let up = move |_| transpose_active(tabs, active, true);
     let down = move |_| transpose_active(tabs, active, false);
 
-    let add_note = move |_| add_note_active(tabs, active, status);
-    let add_rest = move |_| add_rest_active(tabs, active, status);
+    let add_note = move |_| add_note_with_active(tabs, active, status, *current_dur.peek());
+    let add_rest = move |_| add_rest_with_active(tabs, active, status, *current_dur.peek());
     let add_meas = move |_| add_measure_active(tabs, active, status);
     let delete = move |_| delete_selected_active(tabs, active, status);
 
-    // Entrada por teclado: setas navegam/transpõem, A–G altura, 1–5 duração,
-    // #/+ e - acidentes, n natural, Del/Backspace apaga.
+    // Entrada por teclado (step-time): ←/→ navegam, espaço escreve nota com a duração
+    // ativa, 1–5 escolhem a duração ativa (e aplicam à nota selecionada), ↑/↓ transpõem,
+    // A–G altura, #/+ e - acidentes, n natural, 0/R pausa, Del/Backspace apaga.
     let on_key = move |evt: KeyboardEvent| match evt.key() {
         Key::ArrowRight => navigate_active(tabs, active, true),
         Key::ArrowLeft => navigate_active(tabs, active, false),
@@ -247,18 +251,19 @@ fn App() -> Element {
         Key::Character(s) => {
             let k = s.to_lowercase();
             match k.as_str() {
+                " " => add_note_with_active(tabs, active, status, *current_dur.peek()),
                 "a" | "b" | "c" | "d" | "e" | "f" | "g" => {
                     set_step_active(tabs, active, status, k.chars().next().unwrap())
                 }
                 "1" | "2" | "3" | "4" | "5" => {
                     if let Some(base) = duration_base_from_key(k.chars().next().unwrap()) {
-                        set_duration_active(tabs, active, status, base);
+                        pick_duration(current_dur, tabs, active, status, base);
                     }
                 }
                 "#" | "+" => set_accidental_active(tabs, active, status, Some(Accidental::Sharp)),
                 "-" => set_accidental_active(tabs, active, status, Some(Accidental::Flat)),
                 "n" => set_accidental_active(tabs, active, status, None),
-                "0" | "r" => add_rest_active(tabs, active, status),
+                "0" | "r" => add_rest_with_active(tabs, active, status, *current_dur.peek()),
                 _ => {}
             }
         }
@@ -319,6 +324,15 @@ fn App() -> Element {
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "nenhuma pasta".into());
 
+    // Durações selecionáveis: (tecla, base, rótulo, nome).
+    let durations = [
+        ('1', DurationBase::Whole, "1", "Semibreve"),
+        ('2', DurationBase::Half, "½", "Mínima"),
+        ('3', DurationBase::Quarter, "¼", "Semínima"),
+        ('4', DurationBase::Eighth, "⅛", "Colcheia"),
+        ('5', DurationBase::Sixteenth, "1/16", "Semicolcheia"),
+    ];
+
     rsx! {
         style { {css} }
         div { class: "app", tabindex: "0", autofocus: true, onkeydown: on_key,
@@ -328,15 +342,25 @@ fn App() -> Element {
                 button { class: "btn", onclick: open_folder, "Abrir pasta" }
                 button { class: "btn", onclick: save, "Salvar" }
                 span { class: "divider" }
+                // Seletor de duração ativa (destaca a selecionada).
+                for (key , base , label , name) in durations {
+                    button {
+                        class: if current_dur() == base { "btn dur active" } else { "btn dur" },
+                        title: "{name} — tecla {key}",
+                        onclick: move |_| pick_duration(current_dur, tabs, active, status, base),
+                        "{label}"
+                    }
+                }
+                span { class: "divider" }
                 button {
                     class: "btn",
-                    title: "Adiciona nota · teclado: A–G altura, 1–5 duração, ←/→ navega",
+                    title: "Escreve nota com a duração ativa (barra de espaço); ←/→ navega",
                     onclick: add_note,
                     "＋ nota"
                 }
                 button {
                     class: "btn",
-                    title: "Adiciona pausa de semínima (tecla 0 ou R)",
+                    title: "Adiciona pausa com a duração ativa (tecla 0 ou R)",
                     onclick: add_rest,
                     "＋ pausa"
                 }

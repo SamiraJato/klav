@@ -30,6 +30,8 @@ pub fn build_css() -> String {
         }}
         .btn:hover {{ background: #585b70; }}
         .btn:disabled {{ opacity: 0.4; cursor: default; }}
+        .btn.dur {{ min-width: 30px; text-align: center; }}
+        .btn.dur.active {{ background: #89b4fa; color: #1e1e2e; font-weight: 700; }}
         .divider {{ width: 1px; align-self: stretch; background: #45475a; margin: 0 4px; }}
         .device {{
             background: #45475a; color: #cdd6f4; border: none; border-radius: 4px;

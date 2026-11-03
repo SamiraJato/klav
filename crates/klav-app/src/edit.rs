@@ -147,12 +147,10 @@ pub fn add_measure(score: &mut Score) -> u32 {
     index
 }
 
-/// Acha a próxima posição livre para uma semínima na voz 0 do último compasso, criando um
-/// compasso se não couber no atual. Devolve `(mi, vi, start)`, ou `None` se nem num compasso
-/// vazio a semínima couber (fórmula muito curta).
-fn free_quarter_slot(score: &mut Score) -> Option<(usize, usize, Fraction)> {
-    let frac = Duration::new(DurationBase::Quarter, 0).as_fraction();
-
+/// Acha a próxima posição livre para um elemento de duração `frac` na voz 0 do último
+/// compasso, criando um compasso se não couber no atual. Devolve `(mi, vi, start)`, ou `None`
+/// se nem num compasso vazio o elemento couber (duração maior que o compasso).
+fn free_slot(score: &mut Score, frac: Fraction) -> Option<(usize, usize, Fraction)> {
     if score.measures.is_empty() {
         add_measure(score);
     }
@@ -178,16 +176,17 @@ fn free_quarter_slot(score: &mut Score) -> Option<(usize, usize, Fraction)> {
     None
 }
 
-/// Adiciona uma semínima de altura padrão (C4) na próxima posição livre da voz 0 do
-/// último compasso (criando compasso se preciso). Devolve o `NoteId` criado, ou `None`.
-pub fn add_default_note(score: &mut Score) -> Option<u64> {
-    let (mi, vi, start) = free_quarter_slot(score)?;
+/// Adiciona uma nota de altura padrão (C4) e duração `base` na próxima posição livre da voz 0
+/// do último compasso (criando compasso se preciso). Devolve o `NoteId` criado, ou `None`.
+pub fn add_note_with(score: &mut Score, base: DurationBase) -> Option<u64> {
+    let duration = Duration::new(base, 0);
+    let (mi, vi, start) = free_slot(score, duration.as_fraction())?;
     let nid = next_note_id(score);
     let eid = next_element_id(score);
     score.measures[mi].voices[vi].elements.push(ChordOrRest {
         id: ElementId(eid),
         start,
-        duration: Duration::new(DurationBase::Quarter, 0),
+        duration,
         is_rest: false,
         notes: vec![Note {
             id: NoteId(nid),
@@ -200,15 +199,15 @@ pub fn add_default_note(score: &mut Score) -> Option<u64> {
     Some(nid)
 }
 
-/// Adiciona uma pausa de semínima na próxima posição livre (como [`add_default_note`], mas
-/// `is_rest`). Devolve o `ElementId` criado, ou `None` se não couber.
-pub fn add_default_rest(score: &mut Score) -> Option<u64> {
-    let (mi, vi, start) = free_quarter_slot(score)?;
+/// Adiciona uma pausa de duração `base` na próxima posição livre. Devolve o `ElementId`.
+pub fn add_rest_with(score: &mut Score, base: DurationBase) -> Option<u64> {
+    let duration = Duration::new(base, 0);
+    let (mi, vi, start) = free_slot(score, duration.as_fraction())?;
     let eid = next_element_id(score);
     score.measures[mi].voices[vi].elements.push(ChordOrRest {
         id: ElementId(eid),
         start,
-        duration: Duration::new(DurationBase::Quarter, 0),
+        duration,
         is_rest: true,
         notes: vec![],
         tuplet: None,
@@ -264,17 +263,18 @@ pub fn delete_note(score: &mut Score, id: u64) -> bool {
 
 // --- Wrappers que tocam os Signal da UI, validando antes de efetivar. ---
 
-/// Adiciona uma nota padrão à aba ativa (seleciona-a) ou reporta no status.
-pub fn add_note_active(
+/// Adiciona uma nota de duração `base` à aba ativa (seleciona-a) — a "escrita" por teclado.
+pub fn add_note_with_active(
     mut tabs: Signal<Vec<Tab>>,
     active: Signal<usize>,
     mut status: Signal<String>,
+    base: DurationBase,
 ) {
     let a = *active.peek();
     let Some(mut score) = tabs.read().get(a).map(|t| t.score.clone()) else {
         return;
     };
-    match add_default_note(&mut score) {
+    match add_note_with(&mut score, base) {
         Some(nid) => match score.validate() {
             Ok(()) => {
                 if let Some(t) = tabs.write().get_mut(a) {
@@ -289,17 +289,18 @@ pub fn add_note_active(
     }
 }
 
-/// Adiciona uma pausa de semínima à aba ativa (não altera a seleção).
-pub fn add_rest_active(
+/// Adiciona uma pausa de duração `base` à aba ativa (não altera a seleção).
+pub fn add_rest_with_active(
     mut tabs: Signal<Vec<Tab>>,
     active: Signal<usize>,
     mut status: Signal<String>,
+    base: DurationBase,
 ) {
     let a = *active.peek();
     let Some(mut score) = tabs.read().get(a).map(|t| t.score.clone()) else {
         return;
     };
-    match add_default_rest(&mut score) {
+    match add_rest_with(&mut score, base) {
         Some(_) => match score.validate() {
             Ok(()) => {
                 if let Some(t) = tabs.write().get_mut(a) {
@@ -310,6 +311,23 @@ pub fn add_rest_active(
             Err(e) => status.set(format!("edição inválida: {e:?}")),
         },
         None => status.set("sem espaço no compasso — use “+ compasso”".into()),
+    }
+}
+
+/// Define a duração ativa (para novas notas) e, se houver nota selecionada, aplica-a a ela
+/// também — sem reclamar quando não há seleção (só trocar a duração ativa é válido).
+pub fn pick_duration(
+    mut current: Signal<DurationBase>,
+    tabs: Signal<Vec<Tab>>,
+    active: Signal<usize>,
+    status: Signal<String>,
+    base: DurationBase,
+) {
+    current.set(base);
+    let a = *active.peek();
+    let has_sel = tabs.peek().get(a).and_then(|t| t.selected).is_some();
+    if has_sel {
+        set_duration_active(tabs, active, status, base);
     }
 }
 
@@ -666,7 +684,7 @@ mod tests {
     #[test]
     fn add_note_preenche_posicao_livre_sem_criar_compasso() {
         let mut s = n_quarters(1); // cabem mais 3
-        let nid = add_default_note(&mut s).unwrap();
+        let nid = add_note_with(&mut s, DurationBase::Quarter).unwrap();
         assert_eq!(s.measures.len(), 1);
         assert_eq!(s.validate(), Ok(()));
         // a nova entra em start = 1/4
@@ -680,7 +698,7 @@ mod tests {
     fn add_note_cria_compasso_quando_cheio() {
         let mut s = n_quarters(4); // compasso 4/4 cheio
         let notes_before = count_notes(&s);
-        let nid = add_default_note(&mut s).unwrap();
+        let nid = add_note_with(&mut s, DurationBase::Quarter).unwrap();
         assert_eq!(s.validate(), Ok(()));
         assert_eq!(count_notes(&s), notes_before + 1);
         assert_eq!(s.measures.len(), 2, "devia ter criado um compasso");
@@ -690,9 +708,23 @@ mod tests {
     }
 
     #[test]
+    fn add_note_with_usa_a_duracao_dada() {
+        let mut s = n_quarters(0);
+        s.measures.clear();
+        let nid = add_note_with(&mut s, DurationBase::Half).unwrap();
+        let cr = s.measures[0].voices[0]
+            .elements
+            .iter()
+            .find(|cr| cr.notes.iter().any(|n| n.id.value() == nid))
+            .unwrap();
+        assert_eq!(cr.duration.base, DurationBase::Half);
+        assert_eq!(s.validate(), Ok(()));
+    }
+
+    #[test]
     fn add_rest_coloca_pausa_na_posicao_livre() {
         let mut s = n_quarters(1); // uma semínima em 0; pausa entra em 1/4
-        let eid = add_default_rest(&mut s).unwrap();
+        let eid = add_rest_with(&mut s, DurationBase::Quarter).unwrap();
         let el = &s.measures[0].voices[0].elements;
         assert_eq!(el.len(), 2);
         assert!(el[1].is_rest);
@@ -706,7 +738,7 @@ mod tests {
     fn add_note_em_score_vazio_cria_compasso() {
         let mut s = n_quarters(0);
         s.measures.clear();
-        let nid = add_default_note(&mut s).unwrap();
+        let nid = add_note_with(&mut s, DurationBase::Quarter).unwrap();
         assert_eq!(s.measures.len(), 1);
         assert_eq!(s.validate(), Ok(()));
         assert!(nid >= 1);
