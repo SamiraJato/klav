@@ -39,11 +39,20 @@ fn main() {
 
     let measure = Measure {
         index: 0,
-        time_signature: Some(TimeSignature { numerator: 4, denominator: 4 }),
+        time_signature: Some(TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        }),
         key_signature: Some(0),
         chord_symbols: vec![
-            ChordSymbol { start: Fraction::ZERO, text: "C".into() },
-            ChordSymbol { start: q + q, text: "G7".into() },
+            ChordSymbol {
+                start: Fraction::ZERO,
+                text: "C".into(),
+            },
+            ChordSymbol {
+                start: q + q,
+                text: "G7".into(),
+            },
         ],
         voices: vec![voice],
         tuplets: vec![],

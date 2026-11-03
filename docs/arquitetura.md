@@ -1,9 +1,38 @@
 # klav — Plano de Arquitetura (v1)
 
 > Modelo de dados e arquitetura do MVP do **klav**: app de partituras ultraleve e cross-platform
-> (Rust + WebAssembly + Tauri), focado em instrumentos de teclas.
+> (Rust + WebAssembly; desktop via Dioxus/webview, empacotamento Tauri planejado), focado em
+> instrumentos de teclas.
 > Incorpora as lições da análise do MuseScore — ver [analise-musescore.md](analise-musescore.md).
 > Data: 2026-11-02.
+
+> **Como ler este documento.** É o plano de arquitetura (alvo), não um retrato do código.
+> O que já existe e o que é roadmap estão separados na seção **0. Estado de implementação**;
+> ao longo do texto, 🔭 marca pontos ainda planejados.
+
+---
+
+## 0. Estado de implementação (2026-11-02)
+
+**Já implementado:**
+
+- `klav-core`: `Fraction` (racional reduzida, `i64`), IDs tipados, `Pitch::midi_number()`,
+  o modelo das §§3.2–3.7 e `Score::validate()` cobrindo todos os invariantes da §3.8
+  (unicidade de IDs, ties completos, tuplets, `is_rest`↔`notes`, fórmula de compasso válida).
+- `klav-io`: formato nativo **`.klav`** (JSON versionado via `serde`), com validação no load.
+- `klav-engine`: `render_events` (modelo → eventos MIDI, tratando ties e tuplets),
+  `key_intervals` (pareamento por tecla, preservando instâncias simultâneas) e `tick → segundos`.
+- `klav-layout`: geometria SVG da **pauta simples** (posições em *staff-spaces* + glifos SMuFL).
+- `klav-app`: UI Dioxus com render **SVG**, explorer/abas, playback (cursor + teclado de 88 teclas
+  + áudio por síntese senoidal), e edição de **altura** da nota selecionada (↑/↓).
+
+**Ainda planejado (roadmap — não confundir com o estado atual):**
+
+- 🔭 Empacotamento/distribuição com **Tauri** (Fatia 7). Hoje o desktop roda via webview do Dioxus.
+- 🔭 Backend de render **Canvas/WebGL** para partituras grandes (o backend atual é SVG).
+- 🔭 Import de **MusicXML** e **MIDI** em `klav-io` (hoje só o formato nativo `.klav`).
+- 🔭 Canal de posição áudio↔UI da §4 (hoje o app usa um relógio por *polling* ~60 fps na própria UI).
+- 🔭 Editor de conteúdo rico, undo/redo e mixer funcional (ver §7).
 
 ---
 
@@ -28,10 +57,10 @@ Derivados da análise do MuseScore e das metas do klav:
 
 ```
 klav-core        → modelo de dados musical puro (sem UI, sem áudio). #![no_std]-friendly quando der.
-klav-io          → import/export (MusicXML, MIDI, formato nativo .klav)
-klav-engine       → playback: modelo → eventos MIDI temporizados + relógio
-klav-layout       → modelo → geometria (sistemas, pautas, posições) — camada derivada
-klav-app (Tauri)  → shell desktop + bridge WASM + render (canvas/webgl)
+klav-io          → import/export: formato nativo .klav ✅  |  MusicXML, MIDI 🔭
+klav-engine      → playback: modelo → eventos MIDI temporizados ✅  |  relógio/canal de posição 🔭 (§4)
+klav-layout      → modelo → geometria (sistemas, pautas, posições) — camada derivada
+klav-app         → UI Dioxus (webview) + render SVG ✅  |  empacotamento Tauri 🔭, backend Canvas/WebGL 🔭
 ```
 
 O `klav-core` é o coração e o foco deste documento.
@@ -44,9 +73,11 @@ O `klav-core` é o coração e o foco deste documento.
 
 ```rust
 /// Posição ou duração musical como fração de semibreve (whole note).
-/// Ex.: semínima = 1/4, colcheia pontuada = 3/16. Sempre mantida reduzida.
+/// Ex.: semínima = 1/4, colcheia pontuada = 3/16. Sempre mantida reduzida, den > 0.
+/// Campos privados: construída por Fraction::new / try_new (que normaliza e rejeita den == 0),
+/// lida por num()/den(). Implementada com i64.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Fraction { pub num: i32, pub den: i32 }
+pub struct Fraction { num: i64, den: i64 }
 
 /// ID estável e tipado. Newtype sobre u64 (ou String, se precisar serializar legível).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -172,7 +203,7 @@ pub struct Measure {
     pub tuplets: Vec<Tuplet>,                     // quiálteras deste compasso
 }
 
-pub const VOICES: usize = 4;
+pub const VOICES: u8 = 4;
 
 pub struct Score {
     pub title: String,
@@ -189,11 +220,22 @@ pub struct Score {
 - Todo `start` de `ChordOrRest`/`ChordSymbol` cai dentro do compasso.
 - `tie_to` referencia um `NoteId` existente de mesma altura, no futuro imediato da mesma voz.
 - `voice_id` único por compasso e `< VOICES`.
-- Todo `ElementId` em `Tuplet::members` existe no compasso.
+- `NoteId` e `ElementId` únicos no documento; `TupletId` único por compasso.
+- `is_rest` é coerente com `notes` (pausa não tem notas; acorde tem ≥1).
+- Fórmula de compasso com numerador/denominador zero é rejeitada.
+- Tuplets: `actual`/`normal` > 0, todo `ElementId` em `Tuplet::members` existe no compasso e a
+  associação elemento↔tuplet é coerente nos dois sentidos.
+
+> Todos os itens acima já são verificados por `Score::validate()`; cada um tem uma variante
+> específica de `ValidationError` com contexto (compasso, id envolvido).
 
 ---
 
 ## 4. Playback (`klav-engine`) — modelo desacoplado
+
+> **Estado:** `klav-engine` já produz os eventos MIDI e a conversão tick→segundos. O **canal de
+> posição áudio↔UI** descrito abaixo ainda é 🔭 planejado: hoje o `klav-app` avança o cursor com um
+> relógio por *polling* (~60 fps) na própria UI e dispara `NoteOn`/`NoteOff` ao sintetizador.
 
 Replicando o padrão do MuseScore (áudio publica tempo, UI interpola):
 
@@ -266,3 +308,42 @@ não precisa de mapeamento inverso de coordenadas), mouse depois.
 - **Fatia 6 — Multi-pauta + Mixer funcional:** Grand Staff completo (2 pautas) e mixer por pauta.
 - **Fatia 7 — Tauri:** empacotamento/distribuição.
 - **Fatia 2c (quando quiser):** SoundFont para som de piano real no lugar da síntese senoidal.
+
+---
+
+## 8. Convenções de implementação (padrões a seguir)
+
+Consolidadas a partir das correções de arquitetura de 2026-11-02. Valem para o editor de
+conteúdo, undo/redo, import (MusicXML/MIDI) e multi-pauta que vêm a seguir.
+
+1. **Dado externo falha com erro, nunca com panic.** Todo tipo com invariante de construção
+   expõe um construtor falível (`try_new → Option`/`Result`) e um construtor conhecido (`new`,
+   que pode panicar como *contrato* para valores internos). Entrada externa — desserialização,
+   parsing, import futuro — passa pelo caminho falível. Em `serde`, use `#[serde(try_from = "Raw")]`
+   para validar/normalizar no load sem mudar o formato de serialização. (Ex.: [`Fraction`] §3.1.)
+
+2. **Invariante ⇒ checagem + variante + teste.** Toda regra do modelo tem (a) checagem em
+   `Score::validate()`, (b) uma variante específica de `ValidationError` com contexto (compasso,
+   id envolvido) — nada de mensagem genérica — e (c) um teste de erro. Consumidores (engine,
+   layout) **assumem** os invariantes; por isso `klav-io` valida no load antes de entregar o `Score`.
+   Quem cria dado novo (editor, import) roda `validate()` antes de persistir/tocar.
+
+3. **Escopo de unicidade dos IDs** (respeitar ao gerar ids no editor/import): `NoteId` e
+   `ElementId` são únicos **no documento**; `TupletId` é único **por compasso**. Ties referenciam
+   `NoteId` global; membros de tuplet referenciam `ElementId` do mesmo compasso. A associação
+   elemento↔tuplet é bidirecional e coerente.
+
+4. **Lógica pura mora nas crates de biblioteca; o app só compõe.** Regra prática: se dá para
+   testar sem abrir janela ou dispositivo de áudio, **não** fica em `klav-app`. Transformações do
+   modelo são do `klav-engine`/`klav-core`/`klav-layout` (ex.: `render_events`, `key_intervals`).
+   No `klav-app`, `main.rs` é só composição da UI; funções que mexem em estado recebem os `Signal`
+   explicitamente e vivem em módulos por responsabilidade (`document`, `edit`, `project`, `keyboard`,
+   `theme`). Toda lógica extraída ganha teste unitário.
+
+5. **Tempo é `Fraction`; `f64` só na borda de áudio/render.** `Fraction::to_f64()` é ponto de
+   *saída* (posição de cursor, segundos, pixels), nunca realimenta a lógica rítmica. (Princípio §1.2.)
+
+6. **Eventos MIDI do engine não carregam identidade de nota — só `key`.** O pareamento
+   NoteOn/NoteOff é **FIFO por tecla** (`key_intervals`), o que preserva instâncias simultâneas da
+   mesma altura. Qualquer consumidor novo (export MIDI, outro sintetizador) deve preservar múltiplas
+   instâncias por tecla, nunca assumir uma só.

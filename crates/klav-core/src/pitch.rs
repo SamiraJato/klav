@@ -74,10 +74,7 @@ impl Pitch {
     /// Nunca é armazenado: é sempre recalculado a partir de step/octave/accidental.
     pub fn midi_number(&self) -> Option<u8> {
         let semitone = Self::step_semitone(self.step)?;
-        let acc = self
-            .accidental
-            .map(|a| a.semitone_offset())
-            .unwrap_or(0);
+        let acc = self.accidental.map(|a| a.semitone_offset()).unwrap_or(0);
         // MIDI: C-1 = 0  =>  (octave + 1) * 12 + semitom + acidente
         let midi = (self.octave as i32 + 1) * 12 + semitone + acc;
         if (0..=127).contains(&midi) {

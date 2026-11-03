@@ -88,7 +88,10 @@ pub fn layout_single_staff(score: &Score) -> StaffLayout {
         Clef::Bass => 1.0,
     };
     glyphs.push(PlacedGlyph {
-        pos: Point { x: MARGIN, y: clef_y },
+        pos: Point {
+            x: MARGIN,
+            y: clef_y,
+        },
         glyph: clef_glyph,
         note_id: None,
     });
@@ -150,7 +153,12 @@ mod tests {
     };
 
     fn note(id: u64, step: char, octave: i8) -> Note {
-        Note { id: NoteId(id), pitch: Pitch::new(step, octave, None), velocity: 80, tie_to: None }
+        Note {
+            id: NoteId(id),
+            pitch: Pitch::new(step, octave, None),
+            velocity: 80,
+            tie_to: None,
+        }
     }
 
     fn elem(id: u64, start: Fraction, base: DurationBase, notes: Vec<Note>) -> ChordOrRest {
@@ -171,7 +179,10 @@ mod tests {
             staff_type: staff,
             measures: vec![Measure {
                 index: 0,
-                time_signature: Some(TimeSignature { numerator: 4, denominator: 4 }),
+                time_signature: Some(TimeSignature {
+                    numerator: 4,
+                    denominator: 4,
+                }),
                 key_signature: Some(0),
                 chord_symbols: vec![],
                 voices,
@@ -186,7 +197,15 @@ mod tests {
 
     #[test]
     fn coloca_clave_e_uma_cabeca() {
-        let v = Voice { voice_id: 0, elements: vec![elem(1, Fraction::ZERO, DurationBase::Quarter, vec![note(10, 'C', 4)])] };
+        let v = Voice {
+            voice_id: 0,
+            elements: vec![elem(
+                1,
+                Fraction::ZERO,
+                DurationBase::Quarter,
+                vec![note(10, 'C', 4)],
+            )],
+        };
         let l = layout_single_staff(&score(StaffType::Single(Clef::Treble), vec![v]));
         assert_eq!(l.clef, Clef::Treble);
         // primeiro glifo é a clave
@@ -206,7 +225,12 @@ mod tests {
         let v = Voice {
             voice_id: 0,
             elements: vec![
-                elem(1, Fraction::ZERO, DurationBase::Quarter, vec![note(10, 'E', 4)]),
+                elem(
+                    1,
+                    Fraction::ZERO,
+                    DurationBase::Quarter,
+                    vec![note(10, 'E', 4)],
+                ),
                 elem(2, q, DurationBase::Quarter, vec![note(11, 'G', 4)]),
             ],
         };
@@ -219,16 +243,31 @@ mod tests {
 
     #[test]
     fn pausa_vira_glifo_de_pausa_na_linha_central() {
-        let v = Voice { voice_id: 0, elements: vec![elem(1, Fraction::ZERO, DurationBase::Quarter, vec![])] };
+        let v = Voice {
+            voice_id: 0,
+            elements: vec![elem(1, Fraction::ZERO, DurationBase::Quarter, vec![])],
+        };
         let l = layout_single_staff(&score(StaffType::Single(Clef::Treble), vec![v]));
         assert!(noteheads(&l).is_empty());
-        let rest = l.glyphs.iter().find(|g| g.glyph == Glyph::RestQuarter).unwrap();
+        let rest = l
+            .glyphs
+            .iter()
+            .find(|g| g.glyph == Glyph::RestQuarter)
+            .unwrap();
         assert_eq!(rest.pos.y, 2.0);
     }
 
     #[test]
     fn grand_staff_usa_pauta_de_cima_por_enquanto() {
-        let v = Voice { voice_id: 0, elements: vec![elem(1, Fraction::ZERO, DurationBase::Whole, vec![note(10, 'G', 4)])] };
+        let v = Voice {
+            voice_id: 0,
+            elements: vec![elem(
+                1,
+                Fraction::ZERO,
+                DurationBase::Whole,
+                vec![note(10, 'G', 4)],
+            )],
+        };
         let l = layout_single_staff(&score(StaffType::GrandStaff, vec![v]));
         assert_eq!(l.clef, Clef::Treble);
         assert_eq!(l.glyphs[0].glyph, Glyph::GClef);
@@ -236,7 +275,13 @@ mod tests {
 
     #[test]
     fn largura_cresce_com_o_conteudo() {
-        let vazio = score(StaffType::Single(Clef::Treble), vec![Voice { voice_id: 0, elements: vec![] }]);
+        let vazio = score(
+            StaffType::Single(Clef::Treble),
+            vec![Voice {
+                voice_id: 0,
+                elements: vec![],
+            }],
+        );
         let l = layout_single_staff(&vazio);
         // mesmo vazio, ocupa pelo menos o compasso 4/4 (1 semibreve de largura) + margens/clave
         assert!(l.width > MARGIN + CLEF_WIDTH);

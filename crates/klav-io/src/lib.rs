@@ -152,8 +152,8 @@ fn check_version(found: u32) -> Result<()> {
 mod tests {
     use super::*;
     use klav_core::{
-        ChordOrRest, Duration, DurationBase, ElementId, Fraction, Measure, Note, NoteId, Pitch,
-        Score, StaffType, TimeSignature, Voice, Clef,
+        ChordOrRest, Clef, Duration, DurationBase, ElementId, Fraction, Measure, Note, NoteId,
+        Pitch, Score, StaffType, TimeSignature, Voice,
     };
 
     fn sample_score() -> Score {
@@ -173,7 +173,10 @@ mod tests {
             staff_type: StaffType::Single(Clef::Treble),
             measures: vec![Measure {
                 index: 0,
-                time_signature: Some(TimeSignature { numerator: 4, denominator: 4 }),
+                time_signature: Some(TimeSignature {
+                    numerator: 4,
+                    denominator: 4,
+                }),
                 key_signature: Some(0),
                 chord_symbols: vec![],
                 voices: vec![voice],
@@ -223,7 +226,10 @@ mod tests {
             1,
         );
         match from_json_str(&bumped) {
-            Err(KlavIoError::UnsupportedVersion { found: 999, supported }) => {
+            Err(KlavIoError::UnsupportedVersion {
+                found: 999,
+                supported,
+            }) => {
                 assert_eq!(supported, KLAV_FORMAT_VERSION);
             }
             other => panic!("esperava UnsupportedVersion, veio {other:?}"),
@@ -241,6 +247,33 @@ mod tests {
         // unchecked passa; checked falha.
         assert!(from_json_str_unchecked(&json).is_ok());
         assert!(matches!(from_json_str(&json), Err(KlavIoError::Invalid(_))));
+    }
+
+    #[test]
+    fn time_signature_denominador_zero_e_erro_nao_panic() {
+        // Corrompe a fórmula de compasso para 4/0 no JSON de um score válido.
+        let json = to_json_string(&sample_score()).unwrap();
+        let bad = json.replacen("\"denominator\": 4", "\"denominator\": 0", 1);
+        match from_json_str(&bad) {
+            Err(KlavIoError::Invalid(_)) => {}
+            other => panic!("esperava Invalid por denominador zero, veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fraction_denominador_zero_e_erro_de_parsing() {
+        // Injeta uma Fraction com den=0 num `start`; deve falhar já na desserialização.
+        let json = to_json_string(&sample_score()).unwrap();
+        let bad = json.replacen("\"den\": 4", "\"den\": 0", 1);
+        match from_json_str(&bad) {
+            Err(KlavIoError::Json(_)) => {}
+            other => panic!("esperava Json por Fraction den=0, veio {other:?}"),
+        }
+        // E também pelo caminho unchecked (a validação de versão não mascara o erro).
+        assert!(matches!(
+            from_json_str_unchecked(&bad),
+            Err(KlavIoError::Json(_))
+        ));
     }
 
     #[test]

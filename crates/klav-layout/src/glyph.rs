@@ -89,10 +89,19 @@ mod tests {
 
     #[test]
     fn cabeca_por_duracao() {
-        assert_eq!(Glyph::notehead_for(DurationBase::Whole), Glyph::NoteheadWhole);
+        assert_eq!(
+            Glyph::notehead_for(DurationBase::Whole),
+            Glyph::NoteheadWhole
+        );
         assert_eq!(Glyph::notehead_for(DurationBase::Half), Glyph::NoteheadHalf);
-        assert_eq!(Glyph::notehead_for(DurationBase::Quarter), Glyph::NoteheadBlack);
-        assert_eq!(Glyph::notehead_for(DurationBase::Eighth), Glyph::NoteheadBlack);
+        assert_eq!(
+            Glyph::notehead_for(DurationBase::Quarter),
+            Glyph::NoteheadBlack
+        );
+        assert_eq!(
+            Glyph::notehead_for(DurationBase::Eighth),
+            Glyph::NoteheadBlack
+        );
     }
 
     #[test]
