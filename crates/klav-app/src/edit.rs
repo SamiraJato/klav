@@ -151,17 +151,19 @@ pub fn add_measure(score: &mut Score) -> u32 {
     index
 }
 
-/// Acha a próxima posição livre para um elemento de duração `frac` na voz 0 do último
-/// compasso, criando um compasso se não couber no atual. Devolve `(mi, vi, start)`, ou `None`
-/// se nem num compasso vazio o elemento couber (duração maior que o compasso).
-fn free_slot(score: &mut Score, frac: Fraction) -> Option<(usize, usize, Fraction)> {
+/// Acha a próxima posição livre para um elemento de duração `frac` na voz 0, começando a
+/// procurar no compasso `start_mi` e avançando (criando compassos no fim quando precisa).
+/// Devolve `(mi, vi, start)`, ou `None` se nem num compasso vazio o elemento couber.
+fn free_slot_from(
+    score: &mut Score,
+    start_mi: usize,
+    frac: Fraction,
+) -> Option<(usize, usize, Fraction)> {
     if score.measures.is_empty() {
         add_measure(score);
     }
-
-    // Tenta no último compasso; se não couber, cria um e tenta de novo (uma vez).
-    for attempt in 0..2 {
-        let mi = score.measures.len() - 1;
+    let mut mi = start_mi.min(score.measures.len() - 1);
+    loop {
         let measure_dur = measure_dur_at(score, mi);
         let vi = ensure_voice(&mut score.measures[mi], 0);
         let next_start = score.measures[mi].voices[vi]
@@ -173,18 +175,29 @@ fn free_slot(score: &mut Score, frac: Fraction) -> Option<(usize, usize, Fractio
         if next_start + frac <= measure_dur {
             return Some((mi, vi, next_start));
         }
-        if attempt == 0 {
+        // Não coube. Num compasso já vazio significa que a duração não cabe em lugar nenhum.
+        if next_start == Fraction::ZERO {
+            return None;
+        }
+        // Senão, transborda para o próximo compasso (criando-o se for o último).
+        if mi + 1 >= score.measures.len() {
             add_measure(score);
         }
+        mi += 1;
     }
-    None
 }
 
-/// Adiciona uma nota de altura padrão (C4) e duração `base` na próxima posição livre da voz 0
-/// do último compasso (criando compasso se preciso). Devolve o `ElementId` criado, ou `None`.
-pub fn add_note_with(score: &mut Score, base: DurationBase) -> Option<u64> {
+/// Posição livre a partir do último compasso (apêndice no fim do documento).
+fn free_slot(score: &mut Score, frac: Fraction) -> Option<(usize, usize, Fraction)> {
+    let last = score.measures.len().saturating_sub(1);
+    free_slot_from(score, last, frac)
+}
+
+/// Como [`add_note_with`], mas começa a procurar a posição livre no compasso `start_mi`
+/// (o compasso onde a edição está), transbordando para os seguintes quando ele enche.
+pub fn add_note_with_at(score: &mut Score, start_mi: usize, base: DurationBase) -> Option<u64> {
     let duration = Duration::new(base, 0);
-    let (mi, vi, start) = free_slot(score, duration.as_fraction())?;
+    let (mi, vi, start) = free_slot_from(score, start_mi, duration.as_fraction())?;
     let nid = next_note_id(score);
     let eid = next_element_id(score);
     score.measures[mi].voices[vi].elements.push(ChordOrRest {
@@ -291,6 +304,8 @@ pub fn convert_to_rest(score: &mut Score, elem_id: u64) -> bool {
 // --- Wrappers que tocam os Signal da UI, validando antes de efetivar. ---
 
 /// Adiciona uma nota de duração `base` à aba ativa (seleciona-a) — a "escrita" por teclado.
+/// Escreve no compasso do elemento selecionado (transbordando para os seguintes quando enche);
+/// sem seleção, acrescenta no fim do documento.
 pub fn add_note_with_active(
     mut tabs: Signal<Vec<Tab>>,
     active: Signal<usize>,
@@ -298,10 +313,14 @@ pub fn add_note_with_active(
     base: DurationBase,
 ) {
     let a = *active.peek();
-    let Some(mut score) = tabs.read().get(a).map(|t| t.score.clone()) else {
+    let Some((mut score, sel)) = tabs.read().get(a).map(|t| (t.score.clone(), t.selected)) else {
         return;
     };
-    match add_note_with(&mut score, base) {
+    let start_mi = sel
+        .and_then(|id| locate_element(&score, id))
+        .map(|(mi, _, _)| mi)
+        .unwrap_or_else(|| score.measures.len().saturating_sub(1));
+    match add_note_with_at(&mut score, start_mi, base) {
         Some(nid) => match score.validate() {
             Ok(()) => {
                 if let Some(t) = tabs.write().get_mut(a) {
@@ -817,7 +836,7 @@ mod tests {
     #[test]
     fn add_note_preenche_posicao_livre_sem_criar_compasso() {
         let mut s = n_quarters(1); // cabem mais 3
-        let nid = add_note_with(&mut s, DurationBase::Quarter).unwrap();
+        let nid = add_note_with_at(&mut s, 0, DurationBase::Quarter).unwrap();
         assert_eq!(s.measures.len(), 1);
         assert_eq!(s.validate(), Ok(()));
         // a nova entra em start = 1/4
@@ -828,10 +847,35 @@ mod tests {
     }
 
     #[test]
+    fn write_escreve_no_compasso_da_selecao_nao_no_fim() {
+        // 2 compassos: o 0 tem 2 semínimas (cabe mais), o 1 está vazio.
+        let mut s = n_quarters(2);
+        add_measure(&mut s);
+        // escrevendo a partir do compasso 0, a nota entra nele (em 1/2), não no compasso 1.
+        add_note_with_at(&mut s, 0, DurationBase::Quarter).unwrap();
+        assert_eq!(s.measures[0].voices[0].elements.len(), 3);
+        assert_eq!(
+            s.measures[0].voices[0].elements[2].start,
+            Fraction::new(1, 2)
+        );
+        assert_eq!(s.validate(), Ok(()));
+    }
+
+    #[test]
+    fn write_transborda_para_o_proximo_quando_cheio() {
+        // Compasso 0 cheio (4 semínimas) + compasso 1 vazio; escrever a partir do 0 vai pro 1.
+        let mut s = n_quarters(4);
+        add_measure(&mut s);
+        add_note_with_at(&mut s, 0, DurationBase::Quarter).unwrap();
+        assert_eq!(s.measures[1].voices[0].elements.len(), 1);
+        assert_eq!(s.validate(), Ok(()));
+    }
+
+    #[test]
     fn add_note_cria_compasso_quando_cheio() {
         let mut s = n_quarters(4); // compasso 4/4 cheio
         let notes_before = count_notes(&s);
-        let nid = add_note_with(&mut s, DurationBase::Quarter).unwrap();
+        let nid = add_note_with_at(&mut s, 0, DurationBase::Quarter).unwrap();
         assert_eq!(s.validate(), Ok(()));
         assert_eq!(count_notes(&s), notes_before + 1);
         assert_eq!(s.measures.len(), 2, "devia ter criado um compasso");
@@ -844,7 +888,7 @@ mod tests {
     fn add_note_with_usa_a_duracao_dada() {
         let mut s = n_quarters(0);
         s.measures.clear();
-        let nid = add_note_with(&mut s, DurationBase::Half).unwrap();
+        let nid = add_note_with_at(&mut s, 0, DurationBase::Half).unwrap();
         let cr = s.measures[0].voices[0]
             .elements
             .iter()
@@ -871,7 +915,7 @@ mod tests {
     fn add_note_em_score_vazio_cria_compasso() {
         let mut s = n_quarters(0);
         s.measures.clear();
-        let nid = add_note_with(&mut s, DurationBase::Quarter).unwrap();
+        let nid = add_note_with_at(&mut s, 0, DurationBase::Quarter).unwrap();
         assert_eq!(s.measures.len(), 1);
         assert_eq!(s.validate(), Ok(()));
         assert!(nid >= 1);
