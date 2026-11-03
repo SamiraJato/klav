@@ -27,7 +27,7 @@ use synth::{SynthCmd, SynthRuntime};
 use theme::build_css;
 
 use klav_engine::{key_intervals, render_events, total_duration_whole, whole_to_seconds};
-use klav_layout::{layout_single_staff, StaffLayout, CLEF_WIDTH, MARGIN, SPACE_PER_WHOLE};
+use klav_layout::{layout_single_staff, StaffLayout, MAX_SYSTEM_WIDTH};
 
 /// Pixels por staff-space. No SMuFL, 1 em da fonte = 4 staff-spaces.
 const SP_PX: f64 = 10.0;
@@ -83,7 +83,12 @@ fn App() -> Element {
             .map(|s| s.tempo_bpm)
             .unwrap_or(120)
     });
-    let layout = use_memo(move || active_score.read().as_ref().map(layout_single_staff));
+    let layout = use_memo(move || {
+        active_score
+            .read()
+            .as_ref()
+            .map(|s| layout_single_staff(s, MAX_SYSTEM_WIDTH))
+    });
     // Intervalos (tecla, início, fim) em semibreves — pareados no engine, preservando
     // instâncias simultâneas da mesma tecla.
     let intervals = use_memo(move || {
@@ -260,7 +265,8 @@ fn App() -> Element {
     let pos_secs = position();
     let total = total_secs();
     let pos_whole = pos_secs * bpm as f64 / 240.0;
-    let cursor_x = px_x(MARGIN + CLEF_WIDTH + SPACE_PER_WHOLE * pos_whole);
+    // Posição do cursor no sistema que contém o instante atual (ou None se não há pauta).
+    let cursor = lay_opt.as_ref().and_then(|l| l.cursor_at(pos_whole));
     let show_cursor = playing() || pos_secs > 0.0;
 
     let active_keys: HashSet<u8> = {
@@ -360,11 +366,22 @@ fn App() -> Element {
 
                     div { class: "canvas",
                         if let Some(lay) = lay_opt.clone() {
-                            svg { width: "{px_x(lay.width) + LEFT}", height: "{px_y(9.0)}",
-                                for i in 0..lay.line_count {
+                            svg { width: "{px_x(lay.width) + LEFT}", height: "{px_y(lay.height)}",
+                                // Linhas da pauta de cada sistema.
+                                for sys in lay.systems.iter() {
+                                    for i in 0..lay.line_count {
+                                        line {
+                                            x1: "{px_x(0.0)}", y1: "{px_y(sys.y_top + i as f64)}",
+                                            x2: "{px_x(sys.width)}", y2: "{px_y(sys.y_top + i as f64)}",
+                                            stroke: "#333", stroke_width: "1",
+                                        }
+                                    }
+                                }
+                                // Barras de compasso.
+                                for b in lay.barlines.iter() {
                                     line {
-                                        x1: "{px_x(0.0)}", y1: "{px_y(i as f64)}",
-                                        x2: "{px_x(lay.width)}", y2: "{px_y(i as f64)}",
+                                        x1: "{px_x(b.x)}", y1: "{px_y(b.y_top)}",
+                                        x2: "{px_x(b.x)}", y2: "{px_y(b.y_top + (lay.line_count - 1) as f64)}",
                                         stroke: "#333", stroke_width: "1",
                                     }
                                 }
@@ -396,10 +413,10 @@ fn App() -> Element {
                                         }
                                     }
                                 }
-                                if show_cursor {
+                                if let (true, Some((cx, cy))) = (show_cursor, cursor) {
                                     line {
-                                        x1: "{cursor_x}", y1: "{px_y(-1.0)}",
-                                        x2: "{cursor_x}", y2: "{px_y(5.0)}",
+                                        x1: "{px_x(cx)}", y1: "{px_y(cy - 1.0)}",
+                                        x2: "{px_x(cx)}", y2: "{px_y(cy + 5.0)}",
                                         stroke: "crimson", stroke_width: "1.5",
                                     }
                                 }
