@@ -5,8 +5,9 @@
 //! SVG, Canvas ou pixels; o backend de render (no `klav-app`) consome esta cena e desenha.
 //!
 //! Este corte inclui: posição vertical por pitch/clave, glifos SMuFL, espaçamento horizontal
-//! proporcional à duração, **barras de compasso** e **quebra em sistemas** (linhas) quando a
-//! largura passa de [`MAX_SYSTEM_WIDTH`] — a pauta não cresce infinitamente para a direita.
+//! proporcional à duração, **barras de compasso**, **quebra em sistemas** (linhas) quando a
+//! largura passa de [`MAX_SYSTEM_WIDTH`], e um **respiro** ([`MEASURE_PAD`]) nas duas pontas de
+//! cada compasso para o conteúdo não ficar colado nas barras.
 //! **Ainda não:** hastes/bandeirolas, linhas suplementares desenhadas, acidentes posicionados,
 //! quebra em páginas e Grand Staff (usa a pauta de cima por ora).
 
@@ -26,6 +27,9 @@ pub const MARGIN: Sp = 2.0;
 pub const CLEF_WIDTH: Sp = 4.0;
 /// Largura horizontal por semibreve de tempo musical (sp) — base do espaçamento proporcional.
 pub const SPACE_PER_WHOLE: Sp = 24.0;
+/// Respiro (sp) em cada ponta do compasso: o conteúdo começa `MEASURE_PAD` depois da barra
+/// esquerda e termina `MEASURE_PAD` antes da direita, centralizando-o no compasso.
+pub const MEASURE_PAD: Sp = 2.5;
 /// Número de linhas da pauta.
 pub const STAFF_LINE_COUNT: u32 = 5;
 /// Espaço vertical (sp) entre a última linha de um sistema e a primeira do seguinte.
@@ -40,7 +44,7 @@ fn system_height() -> Sp {
     (STAFF_LINE_COUNT as Sp - 1.0) + SYSTEM_GAP
 }
 
-/// X onde começa o conteúdo musical (após margem + clave).
+/// X onde começa o primeiro compasso de um sistema (após margem + clave).
 fn content_start() -> Sp {
     MARGIN + CLEF_WIDTH
 }
@@ -75,10 +79,19 @@ pub struct System {
     pub y_top: Sp,
     /// X do extremo direito ocupado (sp) — onde termina a última barra.
     pub width: Sp,
-    /// Instante absoluto (semibreves) no início do sistema.
+}
+
+/// A caixa de um compasso já diagramado, usada para mapear tempo → posição (ex.: cursor).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeasureBox {
+    /// Instante absoluto (semibreves) do início do compasso.
     pub start_whole: f64,
-    /// Instante absoluto (semibreves) no fim do sistema.
+    /// Instante absoluto (semibreves) do fim do compasso.
     pub end_whole: f64,
+    /// X (sp) onde o conteúdo começa (após o respiro esquerdo).
+    pub x_notes: Sp,
+    /// Y da linha superior do sistema em que o compasso está.
+    pub y_top: Sp,
 }
 
 /// Geometria de uma pauta já diagramada, possivelmente em vários sistemas (linhas).
@@ -92,28 +105,29 @@ pub struct StaffLayout {
     /// Altura total ocupada por todos os sistemas (sp).
     pub height: Sp,
     pub systems: Vec<System>,
+    pub measures: Vec<MeasureBox>,
     pub glyphs: Vec<PlacedGlyph>,
     pub barlines: Vec<Barline>,
 }
 
 impl StaffLayout {
     /// Posição `(x, y_top)` do cursor para um instante absoluto (semibreves), localizando
-    /// o sistema que o contém. `None` só se não houver sistema algum.
+    /// o compasso que o contém. `None` se o score não tem compassos.
     pub fn cursor_at(&self, abs_whole: f64) -> Option<(Sp, Sp)> {
-        let last = self.systems.len().saturating_sub(1);
-        for (i, s) in self.systems.iter().enumerate() {
-            let within = abs_whole >= s.start_whole
-                && (abs_whole < s.end_whole || (i == last && abs_whole <= s.end_whole));
+        let last = self.measures.len().saturating_sub(1);
+        for (i, mb) in self.measures.iter().enumerate() {
+            let within = abs_whole >= mb.start_whole
+                && (abs_whole < mb.end_whole || (i == last && abs_whole <= mb.end_whole));
             if within {
-                let x = content_start() + (abs_whole - s.start_whole) * SPACE_PER_WHOLE;
-                return Some((x, s.y_top));
+                let x = mb.x_notes + (abs_whole - mb.start_whole) * SPACE_PER_WHOLE;
+                return Some((x, mb.y_top));
             }
         }
-        // Fora do alcance: ancora no fim do último sistema.
-        self.systems.last().map(|s| {
+        // Fora do alcance: ancora no fim do último compasso.
+        self.measures.last().map(|mb| {
             (
-                content_start() + (s.end_whole - s.start_whole) * SPACE_PER_WHOLE,
-                s.y_top,
+                mb.x_notes + (mb.end_whole - mb.start_whole) * SPACE_PER_WHOLE,
+                mb.y_top,
             )
         })
     }
@@ -149,15 +163,14 @@ pub fn layout_single_staff(score: &Score, max_width: Sp) -> StaffLayout {
         StaffType::GrandStaff => Clef::Treble, // TODO: diagramar as duas pautas
     };
 
-    let cs = content_start();
     let mut glyphs: Vec<PlacedGlyph> = Vec::new();
     let mut barlines: Vec<Barline> = Vec::new();
     let mut systems: Vec<System> = Vec::new();
+    let mut measures: Vec<MeasureBox> = Vec::new();
 
     let mut sys_index: usize = 0;
-    let mut sys_local = 0.0_f64; // whole acumulado no sistema atual
-    let mut sys_start_abs = 0.0_f64; // abs whole no início do sistema atual
-    let mut abs = 0.0_f64; // abs whole no início do compasso atual
+    let mut sys_x = content_start(); // x (sp) onde começa o próximo compasso no sistema atual
+    let mut abs = 0.0_f64; // instante absoluto (semibreves) no início do compasso atual
     let mut cur_dur = 1.0_f64; // 4/4 por padrão
 
     let y_top = |i: usize| i as Sp * system_height();
@@ -168,24 +181,24 @@ pub fn layout_single_staff(score: &Score, max_width: Sp) -> StaffLayout {
         if let Some(ts) = m.time_signature {
             cur_dur = ts.measure_duration().to_f64();
         }
+        let box_w = cur_dur * SPACE_PER_WHOLE + 2.0 * MEASURE_PAD;
 
-        // Quebra de sistema: se já há conteúdo e somar este compasso passa da largura máxima.
-        if sys_local > 0.0 && cs + (sys_local + cur_dur) * SPACE_PER_WHOLE > max_width {
+        // Quebra: se o sistema já tem conteúdo e somar este compasso passaria da largura.
+        if sys_x > content_start() && sys_x + box_w > max_width {
             systems.push(System {
                 y_top: y_top(sys_index),
-                width: cs + sys_local * SPACE_PER_WHOLE,
-                start_whole: sys_start_abs,
-                end_whole: abs,
+                width: sys_x,
             });
             sys_index += 1;
-            sys_local = 0.0;
-            sys_start_abs = abs;
+            sys_x = content_start();
             push_clef(&mut glyphs, clef, y_top(sys_index));
         }
 
+        let x_notes = sys_x + MEASURE_PAD;
+
         for v in &m.voices {
             for cr in &v.elements {
-                let x = cs + (sys_local + cr.start.to_f64()) * SPACE_PER_WHOLE;
+                let x = x_notes + cr.start.to_f64() * SPACE_PER_WHOLE;
 
                 if cr.is_rest {
                     glyphs.push(PlacedGlyph {
@@ -215,27 +228,33 @@ pub fn layout_single_staff(score: &Score, max_width: Sp) -> StaffLayout {
             }
         }
 
-        sys_local += cur_dur;
-        abs += cur_dur;
-
-        // Barra ao fim do compasso.
-        barlines.push(Barline {
-            x: cs + sys_local * SPACE_PER_WHOLE,
+        measures.push(MeasureBox {
+            start_whole: abs,
+            end_whole: abs + cur_dur,
+            x_notes,
             y_top: y_top(sys_index),
         });
+
+        // Barra ao fim do compasso (fim da caixa).
+        let barline_x = sys_x + box_w;
+        barlines.push(Barline {
+            x: barline_x,
+            y_top: y_top(sys_index),
+        });
+
+        sys_x += box_w;
+        abs += cur_dur;
     }
 
     // Fecha o último sistema (ou um sistema vazio, se o score não tem compassos).
     let last_width = if score.measures.is_empty() {
-        cs + SPACE_PER_WHOLE
+        content_start() + SPACE_PER_WHOLE
     } else {
-        cs + sys_local * SPACE_PER_WHOLE
+        sys_x
     };
     systems.push(System {
         y_top: y_top(sys_index),
         width: last_width,
-        start_whole: sys_start_abs,
-        end_whole: abs,
     });
 
     let width = systems.iter().map(|s| s.width).fold(0.0_f64, f64::max);
@@ -247,6 +266,7 @@ pub fn layout_single_staff(score: &Score, max_width: Sp) -> StaffLayout {
         width,
         height,
         systems,
+        measures,
         glyphs,
         barlines,
     }
@@ -300,6 +320,13 @@ mod tests {
         }
     }
 
+    fn c_sig() -> TimeSignature {
+        TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        }
+    }
+
     fn score_measures(measures: Vec<Measure>) -> Score {
         Score {
             title: "t".into(),
@@ -316,10 +343,7 @@ mod tests {
             staff_type: staff,
             measures: vec![Measure {
                 index: 0,
-                time_signature: Some(TimeSignature {
-                    numerator: 4,
-                    denominator: 4,
-                }),
+                time_signature: Some(c_sig()),
                 key_signature: Some(0),
                 chord_symbols: vec![],
                 voices,
@@ -353,8 +377,23 @@ mod tests {
         assert_eq!(heads.len(), 1);
         assert_eq!(heads[0].glyph, Glyph::NoteheadBlack);
         assert_eq!(heads[0].pos.y, 5.0); // C4 na 1ª suplementar abaixo
-        assert_eq!(heads[0].pos.x, MARGIN + CLEF_WIDTH);
+                                         // 1ª nota não fica colada na barra: começa após o respiro.
+        let x_esperado = MARGIN + CLEF_WIDTH + MEASURE_PAD;
+        assert_eq!(heads[0].pos.x, x_esperado);
         assert_eq!(heads[0].note_id, Some(10));
+    }
+
+    #[test]
+    fn primeira_nota_tem_respiro_apos_a_barra() {
+        // Compasso 2 começa logo após a barra do compasso 1; sua 1ª nota também tem respiro.
+        let s = score_measures(vec![
+            whole_measure(0, Some(c_sig()), 1),
+            whole_measure(1, None, 2),
+        ]);
+        let l = layout_single_staff(&s, MAX_SYSTEM_WIDTH);
+        let heads = noteheads(&l);
+        // nota do 2º compasso = barra do 1º + respiro
+        assert_eq!(heads[1].pos.x, l.barlines[0].x + MEASURE_PAD);
     }
 
     #[test]
@@ -377,8 +416,9 @@ mod tests {
             MAX_SYSTEM_WIDTH,
         );
         let heads = noteheads(&l);
-        assert_eq!(heads[0].pos.x, MARGIN + CLEF_WIDTH);
-        assert_eq!(heads[1].pos.x, MARGIN + CLEF_WIDTH + SPACE_PER_WHOLE * 0.25);
+        let base = MARGIN + CLEF_WIDTH + MEASURE_PAD;
+        assert_eq!(heads[0].pos.x, base);
+        assert_eq!(heads[1].pos.x, base + SPACE_PER_WHOLE * 0.25);
     }
 
     #[test]
@@ -432,80 +472,54 @@ mod tests {
     #[test]
     fn uma_barra_por_compasso() {
         let s = score_measures(vec![
-            whole_measure(
-                0,
-                Some(TimeSignature {
-                    numerator: 4,
-                    denominator: 4,
-                }),
-                1,
-            ),
+            whole_measure(0, Some(c_sig()), 1),
             whole_measure(1, None, 2),
         ]);
         let l = layout_single_staff(&s, MAX_SYSTEM_WIDTH);
         assert_eq!(l.barlines.len(), 2);
-        // 1ª barra no fim do compasso 0 (1 semibreve), 2ª no fim do 1 (2 semibreves),
-        // ambos no mesmo sistema (2*24=48 sp cabe em MAX_SYSTEM_WIDTH).
-        assert_eq!(l.barlines[0].x, MARGIN + CLEF_WIDTH + SPACE_PER_WHOLE);
-        assert_eq!(l.barlines[1].x, MARGIN + CLEF_WIDTH + 2.0 * SPACE_PER_WHOLE);
+        let box_w = SPACE_PER_WHOLE + 2.0 * MEASURE_PAD;
+        assert_eq!(l.barlines[0].x, MARGIN + CLEF_WIDTH + box_w);
+        assert_eq!(l.barlines[1].x, MARGIN + CLEF_WIDTH + 2.0 * box_w);
         assert_eq!(l.systems.len(), 1);
     }
 
     #[test]
     fn quebra_em_sistemas_ao_passar_da_largura() {
         // Largura de teste explícita (independe da constante de produção).
-        // 6 compassos de semibreve: cada um ocupa 24 sp; conteúdo começa em 6 sp.
-        // Limite 80 sp => cabem 3 compassos por sistema (6+72=78 <= 80; +24 passaria).
-        const W: Sp = 80.0;
+        // 6 compassos de semibreve: caixa de cada = 24 + 2*2.5 = 29 sp; conteúdo começa em 6.
+        // Limite 90 sp => cabem 3 por sistema (6 + 3*29 = 93? não: 6+29=35,64,93>90 => 2? ver abaixo).
+        const W: Sp = 100.0;
         let measures: Vec<Measure> = (0..6)
             .map(|i| {
-                let ts = if i == 0 {
-                    Some(TimeSignature {
-                        numerator: 4,
-                        denominator: 4,
-                    })
-                } else {
-                    None
-                };
+                let ts = if i == 0 { Some(c_sig()) } else { None };
                 whole_measure(i, ts, (i + 1) as u64)
             })
             .collect();
         let l = layout_single_staff(&score_measures(measures), W);
+        // box_w = 29; 6+29=35,64,93 <=100; +29=122>100 => 3 por sistema => 2 sistemas.
         assert_eq!(l.systems.len(), 2, "esperava 2 sistemas");
-        // O 2º sistema fica abaixo do 1º.
         assert!(l.systems[1].y_top > l.systems[0].y_top);
-        // Cada cabeça de nota do 2º sistema tem y deslocado para baixo.
-        let heads = noteheads(&l);
-        assert_eq!(heads.len(), 6);
-        // A largura total não excede o limite.
+        assert_eq!(noteheads(&l).len(), 6);
         assert!(l.width <= W);
-        // Há uma clave por sistema (2 claves no total).
         let clefs = l.glyphs.iter().filter(|g| g.glyph == Glyph::GClef).count();
         assert_eq!(clefs, 2);
     }
 
     #[test]
     fn cursor_localiza_o_sistema_certo() {
-        const W: Sp = 80.0; // 3 compassos por sistema
+        const W: Sp = 100.0; // 3 compassos por sistema
         let measures: Vec<Measure> = (0..6)
             .map(|i| {
-                let ts = if i == 0 {
-                    Some(TimeSignature {
-                        numerator: 4,
-                        denominator: 4,
-                    })
-                } else {
-                    None
-                };
+                let ts = if i == 0 { Some(c_sig()) } else { None };
                 whole_measure(i, ts, (i + 1) as u64)
             })
             .collect();
         let l = layout_single_staff(&score_measures(measures), W);
-        // Instante 0 -> 1º sistema, no início do conteúdo.
+        // Instante 0 -> 1º compasso, início do conteúdo (após o respiro).
         let (x0, y0) = l.cursor_at(0.0).unwrap();
         assert_eq!(y0, l.systems[0].y_top);
-        assert_eq!(x0, MARGIN + CLEF_WIDTH);
-        // Instante 4 (4º compasso) -> 2º sistema (que começa no compasso 3).
+        assert_eq!(x0, MARGIN + CLEF_WIDTH + MEASURE_PAD);
+        // Instante 4 (4º compasso) -> 2º sistema (começa no compasso 3).
         let (_, y4) = l.cursor_at(4.0).unwrap();
         assert_eq!(y4, l.systems[1].y_top);
     }
